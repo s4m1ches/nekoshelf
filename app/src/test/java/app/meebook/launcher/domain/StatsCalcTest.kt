@@ -25,14 +25,40 @@ class StatsCalcTest {
         assertEquals(listOf(15, 0, 0, 0, 2, 0, 0), w.map { it.second })
     }
 
-    @Test fun heatmapQuartiles() {
-        val days = (1..8).map { DayStat(d(3, it), 1, it * 100) } +
-            DayStat(d(3, 20), 1, 0) + DayStat(LocalDate.of(2025, 3, 1), 1, 500)
-        val h = StatsCalc.heatmap(days, 2026)
-        assertEquals(8, h.size)
-        assertEquals(1, h[d(3, 1)]); assertEquals(1, h[d(3, 2)])
-        assertEquals(2, h[d(3, 3)]); assertEquals(2, h[d(3, 4)])
-        assertEquals(3, h[d(3, 5)]); assertEquals(3, h[d(3, 6)])
-        assertEquals(4, h[d(3, 7)]); assertEquals(4, h[d(3, 8)])
+    private fun year(vararg secs: Int) =
+        secs.mapIndexed { i, v -> DayStat(d(3, i + 1), 1, v) }
+
+    @Test fun heatmapCoversEveryDayOfYear() {
+        val h = StatsCalc.heatmap(year(100, 0) + DayStat(LocalDate.of(2025, 3, 1), 1, 500), 2026)
+        assertEquals(365, h.size)
+        assertEquals(366, StatsCalc.heatmap(emptyList(), 2024).size)
+        assertEquals(0, h[d(3, 2)]) // zero seconds
+        assertEquals(0, h[d(7, 7)]) // no data
+        assertEquals(0, h[LocalDate.of(2026, 12, 31)])
+    }
+
+    @Test fun heatmapMaxIsFourForOneDay() {
+        assertEquals(4, StatsCalc.heatmap(year(100), 2026)[d(3, 1)])
+    }
+
+    @Test fun heatmapMaxIsFourForThreeDays() {
+        val h = StatsCalc.heatmap(year(100, 200, 300), 2026)
+        assertEquals(4, h[d(3, 3)])
+        assertEquals(1, h[d(3, 1)]); assertEquals(2, h[d(3, 2)])
+    }
+
+    @Test fun heatmapTiesAtTopAreFour() {
+        val h = StatsCalc.heatmap(year(100, 300, 300), 2026)
+        assertEquals(4, h[d(3, 2)]); assertEquals(4, h[d(3, 3)])
+        assertEquals(1, h[d(3, 1)])
+    }
+
+    @Test fun heatmapMonotonic() {
+        val vals = intArrayOf(50, 700, 100, 800, 300, 200, 400, 600, 500)
+        val h = StatsCalc.heatmap(year(*vals), 2026)
+        val pairs = vals.indices.map { vals[it] to h.getValue(d(3, it + 1)) }.sortedBy { it.first }
+        assertEquals(pairs.map { it.second }.sorted(), pairs.map { it.second })
+        assertEquals(4, pairs.last().second)
+        assertEquals(1, pairs.first().second)
     }
 }
