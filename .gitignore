@@ -1,1 +1,10 @@
 .superpowers/
+
+/build
+/app/build
+.gradle
+local.properties
+*.jks
+keystore.properties
+.idea/
+*.iml
