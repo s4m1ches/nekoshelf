@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Лаунчер</string>
+    <string name="toggle_wifi">Wi‑Fi</string>
+    <string name="toggle_light">Подсветка</string>
+    <string name="toggle_refresh">Полное обновление экрана</string>
+    <string name="battery_percent">%1$d%%</string>
 </resources>

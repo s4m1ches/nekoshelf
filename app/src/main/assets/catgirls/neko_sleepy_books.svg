@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Nekomimi pack: a white-haired catgirl asleep on a stack of books.
+     Drawn for Bookshelf. -->
+<!-- bookshelf:overhang=0 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 106">
+  <g stroke="#1f1a24" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round">
+    <!-- book stack (lying flat, seen slightly from above) -->
+    <path d="M10 86 H86 V98 H10 Z" fill="#2f4f7a"/>
+    <path d="M10 86 C14 84 82 84 86 86" fill="#e9dfc8"/>
+    <path d="M86 86 V98" fill="none"/>
+    <path d="M13 92 H83" fill="none" stroke="#c9b37a" stroke-width="1"/>
+    <path d="M16 74 H80 V86 H16 Z" fill="#8a2f2f"/>
+    <path d="M16 74 C20 72 76 72 80 74" fill="#e9dfc8"/>
+    <path d="M19 80 H77" fill="none" stroke="#e0c27a" stroke-width="1"/>
+    <path d="M22 64 H74 V74 H22 Z" fill="#3e6b47"/>
+    <path d="M22 64 C26 62 70 62 74 64" fill="#e9dfc8"/>
+    <!-- tail curled along the top book -->
+    <path d="M70 62 C80 62 84 54 78 50 C75 48 72 51 74 53" fill="none" stroke="#1f1a24" stroke-width="5.6"/>
+    <path d="M70 62 C80 62 84 54 78 50 C75 48 72 51 74 53" fill="none" stroke="#e8e6ef" stroke-width="3.4"/>
+    <!-- body lying on the books (sweater) -->
+    <path d="M40 63 C42 50 56 46 66 50 C72 53 72 60 70 63 Z" fill="#6b4f8f"/>
+    <!-- folded arms as a pillow -->
+    <path d="M22 63 C22 55 34 52 46 55 C48 58 47 62 44 63 Z" fill="#6b4f8f"/>
+    <ellipse cx="26" cy="59" rx="4" ry="3" fill="#f8dcc4"/>
+    <!-- head resting on the arms, tilted -->
+    <g transform="rotate(-12 34 44)">
+      <!-- ears -->
+      <path d="M20 36 L16 18 L31 27 Z" fill="#e8e6ef"/>
+      <path d="M48 32 L52 14 L38 24 Z" fill="#e8e6ef"/>
+      <path d="M21.5 31 L19.5 22 L27 27 Z" fill="#e7a2ae" stroke-width="0.8"/>
+      <path d="M46 28 L48.5 19 L41 24 Z" fill="#e7a2ae" stroke-width="0.8"/>
+      <!-- back hair -->
+      <path d="M18 42 C17 52 22 58 30 60 L44 58 C50 54 52 46 50 40 Z" fill="#e8e6ef"/>
+      <!-- face -->
+      <ellipse cx="34" cy="44" rx="15" ry="13.5" fill="#f8dcc4"/>
+      <!-- bangs -->
+      <path d="M19 45 C17 31 25 23 35 23 C45 23 52 31 50 44 C48 39 46 37 44 36 Q43 40 40 42 Q41 37 38 34 Q35 39 31 40 Q33 36 32 33 Q28 37 26 41 Q24 38 24 36 C21 38 20 41 19 45 Z" fill="#e8e6ef"/>
+      <!-- sleeping eyes -->
+      <path d="M25 47 Q28 49.5 31 47" fill="none" stroke-width="1.6"/>
+      <path d="M37 47 Q40 49.5 43 47" fill="none" stroke-width="1.6"/>
+      <ellipse cx="25" cy="51" rx="2.6" ry="1.2" fill="#ee9fa4" stroke="none"/>
+      <ellipse cx="44" cy="51" rx="2.6" ry="1.2" fill="#ee9fa4" stroke="none"/>
+      <path d="M33 52 Q34.5 53.5 36 52" fill="none" stroke-width="0.9"/>
+    </g>
+    <!-- z z z -->
+    <path d="M58 30 H64 L58 36 H64" fill="none" stroke-width="1.6"/>
+    <path d="M67 20 H72 L67 25 H72" fill="none" stroke-width="1.4"/>
+    <path d="M74 12 H78 L74 16 H78" fill="none" stroke-width="1.2"/>
+  </g>
+</svg>
