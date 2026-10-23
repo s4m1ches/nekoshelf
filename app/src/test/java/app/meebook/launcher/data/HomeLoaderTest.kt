@@ -4,6 +4,12 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
 import android.content.pm.PackageInfo
+import android.content.pm.ProviderInfo
+import app.meebook.launcher.data.manga.FakeMangaProvider
+import app.meebook.launcher.domain.StatsCalc
+import org.junit.Assert.assertNull
+import org.robolectric.Robolectric
+import java.util.concurrent.ArrayBlockingQueue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -61,6 +67,77 @@ class HomeLoaderTest {
         val data = loader.load()
         assertTrue(data.mangaInstalled)
         assertFalse(data.mangaAvailable)
+    }
+
+    /** «Манга» installed, permitted and answered by [FakeMangaProvider]. */
+    private fun withManga(context: Context) {
+        FakeMangaProvider.reset()
+        shadowOf(context.packageManager).installPackage(PackageInfo().apply { packageName = "app.komikku.meebook" })
+        shadowOf(context as android.app.Application).grantPermissions("app.komikku.meebook.permission.BRIDGE")
+        val info = ProviderInfo().apply {
+            authority = "app.komikku.meebook.bridge"
+            packageName = "app.komikku.meebook"
+            name = FakeMangaProvider::class.java.name
+            exported = true
+        }
+        Robolectric.buildContentProvider(FakeMangaProvider::class.java).create(info)
+    }
+
+    @Test
+    fun booksPhaseIsDeliveredBeforeASlowMangaAndMangaMergesLater() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        withManga(context)
+        val gate = CountDownLatch(1)
+        FakeMangaProvider.gate = gate // «Манга» cold: the provider doesn't answer yet
+        val loader = HomeLoader(context, koreaderRoot(pages = 7))
+        val booksPhase = ArrayBlockingQueue<HomeData>(1)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val full = pool.submit<HomeData> { loader.load(onBooks = { booksPhase.add(it) }) }
+            val books = booksPhase.poll(20, TimeUnit.SECONDS)
+            assertNotNull("books phase must arrive while «Манга» is still blocked", books)
+            assertFalse(full.isDone)
+            assertTrue(books!!.loaded)
+            assertEquals(7L, books.bookStats!!.pagesTotal)
+            assertFalse("first load: no manga read yet", books.mangaLoaded)
+            assertTrue(books.manga.isEmpty())
+            assertNull(books.mangaStats)
+
+            gate.countDown()
+            val merged = full.get(30, TimeUnit.SECONDS)
+            assertTrue(merged.mangaLoaded)
+            assertTrue(merged.mangaAvailable)
+            assertEquals(listOf("Berserk", "Vagabond"), merged.manga.map { it.title })
+            assertEquals("Berserk", merged.nowManga?.title)
+            assertNotNull(merged.mangaStats)
+            // The book side of the merged result is the books phase, unchanged.
+            assertEquals(books.copy(
+                manga = merged.manga, mangaAvailable = true, mangaInstalled = true, mangaStats = merged.mangaStats,
+                week = merged.week, nowManga = merged.nowManga, mangaCovers = merged.mangaCovers, mangaLoaded = true,
+                mangaDays = merged.mangaDays, mangaBackfilled = merged.mangaBackfilled,
+            ), merged)
+        } finally {
+            gate.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun theMergedResultEqualsASingleLoadAndTheNextBooksPhaseKeepsTheLastManga() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        withManga(context)
+        val loader = HomeLoader(context, koreaderRoot(pages = 3))
+        val single = loader.load()
+        var books: HomeData? = null
+        val merged = loader.load(onBooks = { books = it })
+        // Same inputs: the two-phase result equals the plain load (bar the evaluation clock).
+        assertEquals(single.copy(nowMs = 0), merged.copy(nowMs = 0))
+        assertEquals(StatsCalc.week(merged.bookDays, merged.mangaDays, merged.today), merged.week)
+        // A later books phase shows the previous manga read instead of blanking it.
+        assertTrue(books!!.mangaLoaded)
+        assertEquals(single.manga, books!!.manga)
+        assertEquals(single.mangaStats, books!!.mangaStats)
+        assertEquals(merged.copy(nowMs = 0), books!!.copy(nowMs = 0))
     }
 
     @Test

@@ -22,6 +22,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import app.meebook.launcher.apps.AppEntry
 import app.meebook.launcher.apps.AppsRepository
+import app.meebook.launcher.data.HomeData
 import app.meebook.launcher.data.HomeLoader
 import app.meebook.launcher.device.Eink
 import app.meebook.launcher.device.HeaderPictures
@@ -142,23 +143,45 @@ class MainActivity : ComponentActivity(), HomeActions {
             pictureSettled = settled
             // Data and picture in parallel: the load starts at once on IO, without waiting for the
             // picture pick or for the main thread (busy with the first frame on a cold start), and
-            // runs while Coil decodes the picture (≈2 s for a big JPEG on a cold start).
-            val load = async(Dispatchers.IO) { loader.load() to apps.dockSlots() }
+            // runs while Coil decodes the picture (≈2 s for a big JPEG on a cold start). The load
+            // hands over the books phase first, so a slow «Манга» never holds the books back.
+            val booksPhase = CompletableDeferred<HomeData>()
+            val load = async(Dispatchers.IO) {
+                try {
+                    loader.load(onBooks = { booksPhase.complete(it) })
+                } catch (e: Throwable) {
+                    booksPhase.completeExceptionally(e)
+                    throw e
+                }
+            }
+            val dock = async(Dispatchers.IO) { apps.dockSlots() }
             val picture = if (newPicture) withContext(Dispatchers.IO) { pictures.next() } else oldPicture
             state.picture = picture
-            val (data, dock) = load.await()
-            state.data = data
-            state.dock = dock
-            Log.i(TAG, "data in ${(System.nanoTime() - t0) / 1_000_000} ms")
-            if (!fullRefresh) return@launch
+            state.data = booksPhase.await()
+            state.dock = dock.await()
+            val booksAt = System.nanoTime()
+            Log.i(TAG, "books in ${(booksAt - t0) / 1_000_000} ms")
+            if (!fullRefresh) {
+                state.data = load.await()
+                return@launch
+            }
             // Wait until the new picture is drawn (or failed), then for that frame to be posted:
             // the full refresh must flash the new content, not the app we came back from.
             val waited = picture != null && picture != oldPicture
             val inTime = !waited || withTimeoutOrNull(2_500) { settled.await() } != null
+            // Give «Манга» up to MANGA_WAIT_MS after the books phase to land in the same refreshed
+            // frame (a warm provider answers in 0.25–0.5 s); a cold one merges later, unflashed.
+            val waitLeft = MANGA_WAIT_MS - (System.nanoTime() - booksAt) / 1_000_000
+            val full = if (load.isCompleted) load.await() else if (waitLeft > 0) withTimeoutOrNull(waitLeft) { load.await() } else null
+            if (full != null) state.data = full
             awaitFrameDrawn()
             awaitFrameDrawn()
-            Log.i(TAG, "home ready in ${(System.nanoTime() - t0) / 1_000_000} ms (picture settled: $inTime); full refresh")
+            Log.i(TAG, "home ready in ${(System.nanoTime() - t0) / 1_000_000} ms (picture settled: $inTime, manga: ${full != null}); full refresh")
             Eink.fullRefresh(this@MainActivity)
+            if (full == null) {
+                state.data = load.await()
+                Log.i(TAG, "manga merged in ${(System.nanoTime() - t0) / 1_000_000} ms (after the full refresh)")
+            }
         }
     }
 
@@ -342,6 +365,8 @@ class MainActivity : ComponentActivity(), HomeActions {
          */
         val HAOQING_PAGE_UP = KeyEvent.keyCodeFromString("HAOQING_PAGE_UP").takeIf { it > 0 } ?: -1
         val HAOQING_PAGE_DOWN = KeyEvent.keyCodeFromString("HAOQING_PAGE_DOWN").takeIf { it > 0 } ?: -1
+        /** How long the full refresh waits for the «Манга» phase after the books phase. */
+        const val MANGA_WAIT_MS = 1_000L
         const val PREF_TAB = "shelf_tab"
         const val PREF_DECOR = "decor_index"
         const val PREF_ASKED = "storage_asked"

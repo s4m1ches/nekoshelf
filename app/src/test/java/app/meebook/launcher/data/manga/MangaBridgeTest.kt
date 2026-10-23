@@ -40,14 +40,17 @@ class FakeMangaProvider : ContentProvider() {
         var nullCursor = false
         var coverFile: File? = null
         var calls = 0
+        /** When set, every query waits for it first: a slow (cold) «Манга» provider. */
+        @Volatile var gate: java.util.concurrent.CountDownLatch? = null
         fun reset() {
-            failWith = null; failFirstCalls = 0; nullCursor = false; coverFile = null; calls = 0
+            failWith = null; failFirstCalls = 0; nullCursor = false; coverFile = null; calls = 0; gate = null
         }
     }
 
     override fun onCreate() = true
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor? {
+        gate?.await(30, java.util.concurrent.TimeUnit.SECONDS)
         calls++
         if (calls <= failFirstCalls) throw IllegalStateException("cold start")
         failWith?.let { throw it }

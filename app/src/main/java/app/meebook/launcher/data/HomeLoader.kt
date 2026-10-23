@@ -43,6 +43,11 @@ data class HomeData(
     /** Wall-clock ms the shelf rules are evaluated at. */
     val nowMs: Long,
     val loaded: Boolean,
+    /**
+     * The «Манга» fields hold a bridge read. False in the books phase of the first load: the
+     * manga parts of the screen stay blank (no premature «не установлена»).
+     */
+    val mangaLoaded: Boolean = loaded,
     /** Per-day reading for the year heatmaps. */
     val bookDays: List<DayStat> = emptyList(),
     val mangaDays: List<DayStat> = emptyList(),
@@ -54,13 +59,14 @@ data class HomeData(
             books = emptyList(), manga = emptyList(), mangaAvailable = false, bookStats = null,
             mangaStats = null, week = emptyList(), today = LocalDate.now(), nowBook = null, nowManga = null,
             bookCovers = emptyMap(), mangaCovers = emptyMap(), nowMs = System.currentTimeMillis(), loaded = false,
+            mangaLoaded = false,
         )
     }
 }
 
 /**
  * Reads KOReader's files, the book folder and the «Манга» bridge into a [HomeData]. Blocking:
- * call on Dispatchers.IO, once per refresh (the stats DB is copied on every call). Each source
+ * call on Dispatchers.IO, once per refresh (the stats DB is copied when it changed). Each source
  * degrades to empty on its own: missing KOReader data never hides manga and vice versa.
  *
  * Loads are serialized process-wide: a cancelled refresh's load keeps running on IO while the
@@ -81,14 +87,56 @@ class HomeLoader(
     /** Last KOReader stats read, keyed on the DB files' size + mtime (and the zone). Under [LOCK]. */
     private var statsMemo: Pair<List<Any>, List<DayStat>>? = null
 
-    fun load(): HomeData = synchronized(LOCK) { loadLocked() }
+    /** The last manga phase, shown again in the next books phase until the new one lands. Under [LOCK]. */
+    private var lastManga: MangaPart? = null
 
-    private fun loadLocked(): HomeData {
+    /**
+     * Loads everything, in two phases under one lock (loads never overlap). The books phase
+     * (KOReader: books, stats, covers) is handed to [onBooks] as soon as it is read — with the
+     * previous load's manga data, or none yet ([HomeData.mangaLoaded] false) on the first load —
+     * so a slow «Манга» provider (seconds on its cold start) never holds the books back. Then the
+     * manga phase is read from the bridge and the merged result returned. [onBooks] runs on the
+     * calling thread, inside the lock: keep it short.
+     */
+    fun load(onBooks: (HomeData) -> Unit = {}): HomeData = synchronized(LOCK) {
         val t0 = SystemClock.elapsedRealtime()
+        val books = readBooks()
+        val t1 = SystemClock.elapsedRealtime()
+        onBooks(merge(books, lastManga))
+        val manga = readManga(books.today, books.nowMs)
+        lastManga = manga
+        val t2 = SystemClock.elapsedRealtime()
+        Log.i(TAG, "load: books=${books.books.size} manga=${manga.manga.size} koreader=${t1 - t0}ms manga=${t2 - t1}ms")
+        merge(books, manga)
+    }
+
+    /** What the KOReader side contributes. */
+    internal data class BooksPart(
+        val books: List<Book>,
+        val bookDays: List<DayStat>,
+        val hasStatsDb: Boolean,
+        val nowBook: Book?,
+        val covers: Map<File, File>,
+        val today: LocalDate,
+        val nowMs: Long,
+    )
+
+    /** What the «Манга» bridge contributes. */
+    internal data class MangaPart(
+        val installed: Boolean,
+        val available: Boolean,
+        val manga: List<Manga>,
+        val days: List<DayStat>,
+        val stats: StatsSummary?,
+        val backfilled: Boolean,
+        val nowManga: Manga?,
+        val covers: Map<Long, File>,
+    )
+
+    private fun readBooks(): BooksPart {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val nowMs = System.currentTimeMillis()
-
         val homeDir = KoreaderPaths(koreaderRoot).homeDir()
         val opened = History.read(koreaderRoot).associate { it.file.absolutePath to it.time }
         val books = BookScanner.scan(homeDir).map { bf ->
@@ -96,60 +144,55 @@ class HomeLoader(
         }
         val bookDb = File(koreaderRoot, "settings/statistics.sqlite3")
         val bookDays = bookDays(bookDb, zone)
-        val t1 = SystemClock.elapsedRealtime()
-
-        // available() first: without «Манга» every bridge call would cost a 300 ms retry.
-        val mangaInstalled = bridge.installed()
-        val mangaAvailable = mangaInstalled && bridge.available()
-        var manga: List<Manga> = emptyList()
-        var mangaDays: List<DayStat> = emptyList()
-        var mangaStats: StatsSummary? = null
-        var mangaBackfilled = false
-        if (mangaAvailable) {
-            manga = bridge.library()
-            mangaDays = bridge.daily()
-            mangaBackfilled = bridge.hasBackfilledDays()
-            val (pages, seconds) = bridge.totals()
-            val s = StatsCalc.summary(mangaDays, today)
-            mangaStats = if (pages > 0 || seconds > 0) s.copy(pagesTotal = pages, secondsTotal = seconds) else s
-        }
-        val t2 = SystemClock.elapsedRealtime()
-
         val nowBook = ShelfBuilder.nowReadingBook(books)
-        val nowManga = ShelfBuilder.nowReadingManga(manga)
-
-        // Covers only for what is drawn as a cover: in-progress items and the «Сейчас читаю» cards.
-        val bookCoverMap = HashMap<File, File>()
+        // Covers only for what is drawn as a cover: in-progress items and the «Сейчас читаю» card.
+        val covers = HashMap<File, File>()
         (books.filter { ShelfBuilder.isInProgress(it) } + listOfNotNull(nowBook)).distinct().forEach { b ->
-            bookCovers.cover(b.file)?.let { bookCoverMap[b.file] = it }
+            bookCovers.cover(b.file)?.let { covers[b.file] = it }
         }
-        val mangaCoverMap = HashMap<Long, File>()
-        (manga.filter { ShelfBuilder.isInProgress(it, nowMs) } + listOfNotNull(nowManga)).distinct().forEach { m ->
-            mangaCovers.cover(m.id, m.coverVersion)?.let { mangaCoverMap[m.id] = it }
-        }
-        val t3 = SystemClock.elapsedRealtime()
-        Log.i(TAG, "load: books=${books.size} manga=${manga.size} koreader=${t1 - t0}ms bridge=${t2 - t1}ms covers=${t3 - t2}ms")
-
-        return HomeData(
-            books = books,
-            manga = manga,
-            mangaAvailable = mangaAvailable,
-            mangaInstalled = mangaInstalled,
-            bookStats = if (bookDb.isFile) StatsCalc.summary(bookDays, today) else null,
-            mangaStats = mangaStats,
-            week = StatsCalc.week(bookDays, mangaDays, today),
-            today = today,
-            nowBook = nowBook,
-            nowManga = nowManga,
-            bookCovers = bookCoverMap,
-            mangaCovers = mangaCoverMap,
-            nowMs = nowMs,
-            loaded = true,
-            bookDays = bookDays,
-            mangaDays = mangaDays,
-            mangaBackfilled = mangaBackfilled,
-        )
+        return BooksPart(books, bookDays, bookDb.isFile, nowBook, covers, today, nowMs)
     }
+
+    private fun readManga(today: LocalDate, nowMs: Long): MangaPart {
+        // available() first: without «Манга» every bridge call would cost a 300 ms retry.
+        val installed = bridge.installed()
+        val available = installed && bridge.available()
+        if (!available) return MangaPart(installed, false, emptyList(), emptyList(), null, false, null, emptyMap())
+        val manga = bridge.library()
+        val days = bridge.daily()
+        val backfilled = bridge.hasBackfilledDays()
+        val (pages, seconds) = bridge.totals()
+        val s = StatsCalc.summary(days, today)
+        val stats = if (pages > 0 || seconds > 0) s.copy(pagesTotal = pages, secondsTotal = seconds) else s
+        val nowManga = ShelfBuilder.nowReadingManga(manga)
+        val covers = HashMap<Long, File>()
+        (manga.filter { ShelfBuilder.isInProgress(it, nowMs) } + listOfNotNull(nowManga)).distinct().forEach { m ->
+            mangaCovers.cover(m.id, m.coverVersion)?.let { covers[m.id] = it }
+        }
+        return MangaPart(installed, true, manga, days, stats, backfilled, nowManga, covers)
+    }
+
+    /** The home data for [b] plus [m]; a null [m] means the manga phase hasn't been read yet. */
+    internal fun merge(b: BooksPart, m: MangaPart?): HomeData = HomeData(
+        books = b.books,
+        manga = m?.manga.orEmpty(),
+        mangaAvailable = m?.available ?: false,
+        mangaInstalled = m?.installed ?: false,
+        bookStats = if (b.hasStatsDb) StatsCalc.summary(b.bookDays, b.today) else null,
+        mangaStats = m?.stats,
+        week = StatsCalc.week(b.bookDays, m?.days.orEmpty(), b.today),
+        today = b.today,
+        nowBook = b.nowBook,
+        nowManga = m?.nowManga,
+        bookCovers = b.covers,
+        mangaCovers = m?.covers.orEmpty(),
+        nowMs = b.nowMs,
+        loaded = true,
+        mangaLoaded = m != null,
+        bookDays = b.bookDays,
+        mangaDays = m?.days.orEmpty(),
+        mangaBackfilled = m?.backfilled ?: false,
+    )
 
     /**
      * KOReader's daily stats, re-read (DB copied and queried) only when statistics.sqlite3 or its

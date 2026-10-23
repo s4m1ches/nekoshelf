@@ -44,6 +44,7 @@ fun StatsBlock(
     books: StatsSummary?,
     manga: StatsSummary?,
     mangaInstalled: Boolean,
+    mangaLoaded: Boolean,
     week: List<Pair<LocalDate, Int>>,
     today: LocalDate,
     loaded: Boolean,
@@ -60,7 +61,7 @@ fun StatsBlock(
             StatCard(
                 stringResource(R.string.stats_manga), manga ?: ZERO,
                 when {
-                    !loaded -> ""
+                    !loaded || !mangaLoaded -> ""
                     manga == null -> stringResource(mangaUnavailableText(mangaInstalled))
                     else -> null
                 },

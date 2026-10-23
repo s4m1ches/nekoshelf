@@ -91,8 +91,9 @@ the owner's device on 2026-10-23.
 
 - When the «Манга» process is not running, its bridge provider takes several seconds to
   answer the first query (one cold start measured 7.3 s on 2026-10-23: `HomeLoader … bridge=7351ms`).
-  The home screen waits for it before the full refresh; with «Манга» already running the
-  bridge part takes 0.25–0.5 s.
+  With «Манга» already running the bridge part takes 0.25–0.5 s. The home screen therefore
+  shows the books first: the full refresh waits for «Манга» at most 1 s after the books, and
+  a later manga read is merged in without another full refresh.
 
 ## Screenshots
 

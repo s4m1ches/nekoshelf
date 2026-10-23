@@ -102,6 +102,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 books = data.bookStats,
                 manga = if (data.mangaAvailable) data.mangaStats else null,
                 mangaInstalled = data.mangaInstalled,
+                mangaLoaded = data.mangaLoaded,
                 week = data.week,
                 today = data.today,
                 loaded = data.loaded,
@@ -115,6 +116,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 mangaCover = data.nowManga?.let { data.mangaCovers[it.id] },
                 mangaAvailable = data.mangaAvailable,
                 mangaInstalled = data.mangaInstalled,
+                mangaLoaded = data.mangaLoaded,
                 loaded = data.loaded,
                 onBook = actions::openBook,
                 onManga = actions::openManga,
@@ -129,6 +131,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 nav = state.nav,
                 emptyText = when {
                     !data.loaded -> ""
+                    state.tab == ShelfTab.MANGA && !data.mangaLoaded -> ""
                     state.tab == ShelfTab.MANGA && !data.mangaAvailable -> stringResource(mangaUnavailableText(data.mangaInstalled))
                     else -> null
                 },

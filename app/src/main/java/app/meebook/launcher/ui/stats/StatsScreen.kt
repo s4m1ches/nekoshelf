@@ -105,7 +105,7 @@ fun StatsScreen(data: HomeData, nav: ShelfNav, onDismiss: () -> Unit) {
             title = stringResource(R.string.stats_manga),
             days = data.mangaDays, year = year, today = data.today,
             note = if (data.mangaBackfilled && data.mangaDays.any { it.day.year == year }) stringResource(R.string.stats_manga_backfilled) else null,
-            unavailable = if (!data.mangaAvailable) stringResource(mangaUnavailableText(data.mangaInstalled)) else null,
+            unavailable = if (data.mangaLoaded && !data.mangaAvailable) stringResource(mangaUnavailableText(data.mangaInstalled)) else null,
         )
         Spacer(Modifier.weight(1f))
         Legend()
