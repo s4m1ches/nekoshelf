@@ -288,6 +288,18 @@ class BackupRunner(
     /** Whether Drive holds any snapshot from an earlier backup. */
     fun hasRemoteBackups(): Boolean = newest(KIND_KOREADER, KOREADER_NAME) != null || newest(KIND_MANGA, MANGA_NAME) != null
 
+    /**
+     * The day of the newest backup on Drive, from the newest KOReader snapshot's name (or, when
+     * there is none, the newest «Манга» one's); null when Drive holds neither.
+     */
+    fun latestSnapshotDate(): LocalDate? {
+        val f = newest(KIND_KOREADER, KOREADER_NAME) ?: newest(KIND_MANGA, MANGA_NAME) ?: return null
+        return SNAPSHOT_DAY.find(f.name)?.let { runCatching { LocalDate.parse(it.value) }.getOrNull() }
+    }
+
+    /** Drive name of the newest «Манга» backup (`manga-YYYY-MM-DD.tachibk`), or null when there is none. */
+    fun latestMangaBackupName(): String? = newest(KIND_MANGA, MANGA_NAME)?.name
+
     /** Downloads the newest KOReader snapshot into [to]; false when there is none. */
     fun latestSnapshot(to: File): Boolean = downloadNewest(KIND_KOREADER, KOREADER_NAME, to)
 
@@ -330,6 +342,7 @@ class BackupRunner(
         const val KIND_MANGA = "manga"
         val KOREADER_NAME = Regex("""koreader-\d{4}-\d{2}-\d{2}\.zip""")
         val MANGA_NAME = Regex("""manga-\d{4}-\d{2}-\d{2}\.tachibk""")
+        val SNAPSHOT_DAY = Regex("""\d{4}-\d{2}-\d{2}""")
     }
 }
 

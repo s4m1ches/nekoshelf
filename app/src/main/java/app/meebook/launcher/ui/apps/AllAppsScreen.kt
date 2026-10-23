@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -51,7 +52,7 @@ private val TITLE_ROW = 48.dp
  * Every installed app as a paged 5-column grid (never scrolled: pages are computed and swapped
  * instantly), icon over a two-line label, in the order given. Tap opens, long-press opens the
  * app's system details page. Back, «Закрыть» or a swipe down returns home; swipes sideways, ‹ ›
- * and the hardware page keys (via [nav]) turn pages.
+ * and the hardware page keys (via [nav]) turn pages. «☁ Бэкап» left of «Закрыть» calls [onBackup].
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -61,6 +62,7 @@ fun AllAppsScreen(
     onOpen: (AppEntry) -> Unit,
     onDetails: (AppEntry) -> Unit,
     onDismiss: () -> Unit,
+    onBackup: () -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
     Column(Modifier.fillMaxSize().background(Color.White).padding(ScreenPadding)) {
@@ -69,6 +71,10 @@ fun AllAppsScreen(
                 stringResource(R.string.all_apps), style = serif(20f, bold = true),
                 modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
+            Box(Modifier.outlinedCard().clickable(role = Role.Button, onClick = onBackup).padding(horizontal = 14.dp, vertical = 6.dp)) {
+                Text(stringResource(R.string.backup_button), style = serif(15f, bold = true))
+            }
+            Spacer(Modifier.width(12.dp))
             Box(Modifier.outlinedCard().clickable(role = Role.Button, onClick = onDismiss).padding(horizontal = 14.dp, vertical = 6.dp)) {
                 Text(stringResource(R.string.close), style = serif(15f, bold = true))
             }

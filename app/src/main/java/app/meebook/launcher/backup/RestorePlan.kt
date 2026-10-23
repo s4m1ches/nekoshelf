@@ -84,7 +84,7 @@ fun planRestore(zip: File, koreaderRoot: File, homeDir: File): RestorePlan {
  *   only if no folder of that name exists by then — a failure leaves nothing behind, so the next
  *   plan still offers it;
  * - a book is fetched by [downloadBook] into the temp file it is given and placed only if it has
- *   the manifest's size (otherwise [IOException]).
+ *   the manifest's size (otherwise [IOException]), with the manifest's mtime.
  * A unit that fails is skipped and the rest still come back; afterwards one
  * [RestoreFailedException] says how many failed. Running it again only fills what is still missing.
  */
@@ -162,6 +162,9 @@ fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -
                 downloadBook(book, tmp)
                 val got = if (tmp.isFile) tmp.length() else -1L
                 if (got != book.size) throw IOException("${book.path}: downloaded $got bytes, expected ${book.size}")
+                // The manifest's mtime (kept by the rename): size + mtime then match the Drive copy, so
+                // the next backup does not upload the restored library again. Best effort.
+                tmp.setLastModified(book.mtime)
             })
         }
     }

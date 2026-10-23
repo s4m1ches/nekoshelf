@@ -48,6 +48,57 @@
     <string name="apps_empty">Приложений нет</string>
     <string name="close">Закрыть</string>
 
+    <!-- Backup (all apps → «☁ Бэкап») -->
+    <!-- \uFE0E (variation selector 15): the text (black) cloud; without it Android draws a pale colour emoji. -->
+    <string name="backup_button">☁\uFE0E Бэкап</string>
+    <string name="backup_failing_mark">☁\uFE0E!</string>
+    <string name="backup_title">Бэкап в Google Диск</string>
+    <string name="backup_sign_in">Войти в Google</string>
+    <string name="backup_account">Аккаунт: %1$s</string>
+    <string name="backup_account_unknown">вход выполнен</string>
+    <string name="backup_offer">На Диске есть бэкап от %1$s — восстановить?</string>
+    <string name="backup_offer_no_date">На Диске есть бэкап — восстановить?</string>
+    <string name="backup_offer_no">Не нужно</string>
+    <string name="backup_last">Последний бэкап: %1$s ✓</string>
+    <string name="backup_last_failed">Последний бэкап: %1$s — %2$s</string>
+    <string name="backup_last_ok">Последний удачный: %1$s ✓</string>
+    <string name="backup_last_none">Последний бэкап: ещё не было</string>
+    <string name="backup_koreader">Прогресс и статистика: %1$s</string>
+    <string name="backup_manga">Манга: %1$s</string>
+    <string name="snapshot_one">снимок</string>
+    <string name="snapshot_few">снимка</string>
+    <string name="snapshot_many">снимков</string>
+    <string name="backup_books">Книги на Диске: %1$d из %2$d</string>
+    <string name="backup_books_charger">Книги на Диске: %1$d из %2$d · %3$d ждут зарядки</string>
+    <string name="backup_books_waiting">Книги на Диске: %1$d из %2$d · %3$d ждут отправки</string>
+    <string name="backup_next">Следующий: %1$s</string>
+    <string name="backup_next_tomorrow">завтра при включении</string>
+    <string name="backup_next_wake">при следующем включении</string>
+    <string name="backup_next_offer">ждёт ответа про восстановление</string>
+    <string name="backup_next_sign_in">после входа в Google</string>
+    <string name="backup_running">Идёт бэкап…</string>
+    <string name="backup_waiting_network">Ждёт сети…</string>
+    <string name="backup_now">Сделать сейчас</string>
+    <string name="backup_restore">Восстановить…</string>
+    <string name="backup_sign_in_failed">Не удалось войти в Google</string>
+    <string name="backup_checking_drive">Проверяю Google Диск…</string>
+    <string name="restore_checking">Проверяю, чего не хватает…</string>
+    <string name="restore_summary">Вернётся: книг %1$d, прогресс %2$d книг, статистика — %3$s</string>
+    <string name="restore_stats_yes">да.</string>
+    <string name="restore_stats_no">нет (на читалке есть своя).</string>
+    <string name="restore_ask">Восстановить?</string>
+    <string name="restore_confirm">Восстановить</string>
+    <string name="restore_cancel">Отмена</string>
+    <string name="restore_nothing">На читалке всё на месте — восстанавливать нечего.</string>
+    <string name="restore_close_koreader">Перед восстановлением закрой KOReader.</string>
+    <string name="restore_save_manga">Скачать бэкап Манги в Загрузки</string>
+    <string name="restore_working">Восстанавливаю…</string>
+    <string name="restore_done">Готово</string>
+    <string name="restore_partial">Восстановлено, но не удалось: %1$d</string>
+    <string name="manga_saving">Сохраняю…</string>
+    <string name="manga_saved">Сохранено в Загрузки: %1$s</string>
+    <string name="manga_none">На Диске нет бэкапа Манги</string>
+
     <!-- About (long-press on the clock) -->
     <string name="about_title">О приложении</string>
     <string name="about_app">Лаунчер, версия %1$s</string>

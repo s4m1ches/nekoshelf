@@ -24,6 +24,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.meebook.launcher.R
 import app.meebook.launcher.apps.AppEntry
+import app.meebook.launcher.backup.BackupStatus
+import app.meebook.launcher.backup.showFailureMark
 import app.meebook.launcher.data.HomeData
 import app.meebook.launcher.device.Toggles
 import app.meebook.launcher.domain.Book
@@ -33,6 +35,11 @@ import app.meebook.launcher.domain.ShelfBuilder
 import app.meebook.launcher.domain.ShelfTab
 import app.meebook.launcher.ui.AboutDialog
 import app.meebook.launcher.ui.apps.AllAppsScreen
+import app.meebook.launcher.ui.backup.BackupActions
+import app.meebook.launcher.ui.backup.BackupScreen
+import app.meebook.launcher.ui.backup.BackupUi
+import app.meebook.launcher.ui.backup.RestoreDialog
+import app.meebook.launcher.ui.backup.RestoreUi
 import app.meebook.launcher.ui.stats.StatsScreen
 import java.io.File
 
@@ -41,6 +48,7 @@ sealed interface Overlay {
     data object AllApps : Overlay
     data object Stats : Overlay
     data object About : Overlay
+    data object Backup : Overlay
     data class DockPick(val index: Int) : Overlay
 }
 
@@ -59,6 +67,13 @@ class HomeState(initialTab: ShelfTab) {
     val appsNav = ShelfNav()
     /** Pages the stats screen's years (page 0 = the oldest year). */
     val statsNav = ShelfNav()
+    /** The stored backup status; null until first read (then the backup screen draws blank). */
+    var backup by mutableStateOf<BackupStatus?>(null)
+    /** «☁!» in the header: [showFailureMark] of [backup], recomputed with it. */
+    var backupFailing by mutableStateOf(false)
+    var backupUi by mutableStateOf(BackupUi())
+    /** The restore dialog over the backup screen, if open. */
+    var restore by mutableStateOf<RestoreUi?>(null)
 }
 
 /** Everything the home screen asks the activity to do. */
@@ -74,6 +89,7 @@ interface HomeActions {
     fun showAllApps()
     fun showStats()
     fun showAbout()
+    fun showBackup()
     fun pickDock(index: Int)
     fun setDock(index: Int, app: AppEntry)
     fun closeOverlay()
@@ -86,7 +102,7 @@ interface HomeActions {
  * the paged shelf, the dock. Swipe up anywhere opens all apps. No animations anywhere.
  */
 @Composable
-fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
+fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions, backup: BackupActions) {
     val data = state.data
     Box(Modifier.fillMaxSize().background(Color.White)) {
         Column(Modifier.fillMaxSize().swipes(onUp = actions::showAllApps)) {
@@ -98,6 +114,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 onPictureSettled = actions::pictureSettled,
                 onAbout = actions::showAbout,
                 onTick = actions::clockTick,
+                backupFailing = state.backupFailing,
             )
             if (state.needsPermission) {
                 PermissionCard(actions::requestStorage, Modifier.padding(top = 6.dp))
@@ -154,6 +171,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 onOpen = actions::openApp,
                 onDetails = actions::appDetails,
                 onDismiss = actions::closeOverlay,
+                onBackup = actions::showBackup,
             )
             Overlay.Stats -> StatsScreen(
                 data = data,
@@ -161,6 +179,32 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 onDismiss = actions::closeOverlay,
             )
             Overlay.About -> AboutDialog(onDismiss = actions::closeOverlay)
+            Overlay.Backup -> {
+                val status = state.backup
+                if (status == null) {
+                    Box(Modifier.fillMaxSize().background(Color.White))
+                } else {
+                    BackupScreen(
+                        status = status,
+                        onSignIn = backup::signIn,
+                        onBackupNow = backup::backupNow,
+                        onRestore = backup::openRestore,
+                        onDismiss = actions::closeOverlay,
+                        ui = state.backupUi,
+                        onDeclineOffer = backup::declineRestoreOffer,
+                    )
+                }
+                state.restore?.let { r ->
+                    RestoreDialog(
+                        plan = r.plan,
+                        mangaAvailable = r.mangaAvailable,
+                        onConfirm = backup::confirmRestore,
+                        onSaveManga = backup::saveMangaBackup,
+                        onDismiss = backup::closeRestore,
+                        message = r.message,
+                    )
+                }
+            }
             is Overlay.DockPick -> AppPicker(
                 title = stringResource(R.string.dock_pick),
                 apps = state.allApps,

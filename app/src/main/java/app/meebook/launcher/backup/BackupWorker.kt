@@ -48,18 +48,28 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     internal companion object {
         /** Test hooks: where the access token comes from, and how the runner is built. */
         var tokenSource: (Context) -> (() -> String?) = { GoogleAuth(it)::silentToken }
-        var runnerFactory: (Context, BackupStore, () -> String?) -> BackupRunner = { app, store, token ->
-            val root = File(Environment.getExternalStorageDirectory(), "koreader")
-            BackupRunner(
-                drive = DriveRest(token = { token() ?: throw DriveAuthException("token unavailable") }),
-                store = store,
-                koreaderRoot = root,
-                homeDir = { KoreaderPaths(root).homeDir() },
-                mangaBackup = { MangaBridge(app).backup() },
-                cacheDir = app.cacheDir,
-                clock = System::currentTimeMillis,
-                zone = ZoneId.systemDefault(),
-            )
-        }
+        var runnerFactory: (Context, BackupStore, () -> String?) -> BackupRunner = ::backupRunner
     }
 }
+
+/** KOReader's folder on the reader's storage. */
+fun koreaderRoot(): File = File(Environment.getExternalStorageDirectory(), "koreader")
+
+/** KOReader's books home folder (where the books and their `.sdr` folders live). Blocking. */
+fun koreaderHomeDir(): File = KoreaderPaths(koreaderRoot()).homeDir()
+
+/**
+ * The runner on the real Drive, KOReader folders and «Манга» bridge, as the worker and the backup
+ * screen (sign-in check, restore) both use it. [token] is asked for before every Drive call.
+ */
+fun backupRunner(app: Context, store: BackupStore, token: () -> String?): BackupRunner =
+    BackupRunner(
+        drive = DriveRest(token = { token() ?: throw DriveAuthException("token unavailable") }),
+        store = store,
+        koreaderRoot = koreaderRoot(),
+        homeDir = ::koreaderHomeDir,
+        mangaBackup = { MangaBridge(app).backup() },
+        cacheDir = app.cacheDir,
+        clock = System::currentTimeMillis,
+        zone = ZoneId.systemDefault(),
+    )

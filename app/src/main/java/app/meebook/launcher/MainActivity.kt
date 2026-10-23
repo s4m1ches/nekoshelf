@@ -37,6 +37,7 @@ import app.meebook.launcher.domain.Manga
 import app.meebook.launcher.domain.RefreshGuard
 import app.meebook.launcher.domain.ShelfTab
 import app.meebook.launcher.domain.pickDecorSpots
+import app.meebook.launcher.ui.backup.BackupController
 import app.meebook.launcher.ui.home.HomeActions
 import app.meebook.launcher.ui.home.HomeScreen
 import app.meebook.launcher.ui.home.HomeState
@@ -69,6 +70,7 @@ class MainActivity : ComponentActivity(), HomeActions {
     private lateinit var apps: AppsRepository
     private lateinit var pictures: HeaderPictures
     private lateinit var state: HomeState
+    private lateinit var backup: BackupController
 
     private var observer: ContentObserver? = null
     private var packageReceiver: BroadcastReceiver? = null
@@ -98,6 +100,7 @@ class MainActivity : ComponentActivity(), HomeActions {
         pictures = HeaderPictures(File(Environment.getExternalStorageDirectory(), "Pictures"), prefs)
         val tab = runCatching { ShelfTab.valueOf(prefs.getString(PREF_TAB, null) ?: "") }.getOrDefault(ShelfTab.ALL)
         state = HomeState(tab)
+        backup = BackupController(this, state)
         // Back on the bare home screen must not finish the HOME activity (Android 11 would, and
         // the recreated launcher loses its memos and flashes again): reset to the first page.
         // Registered before setContent so the overlays' Compose BackHandlers (added later) win.
@@ -106,14 +109,16 @@ class MainActivity : ComponentActivity(), HomeActions {
             state.nav.page = 0
         }
         setContent {
-            EinkTheme { HomeScreen(state, toggles, this) }
+            EinkTheme { HomeScreen(state, toggles, this, backup) }
         }
     }
 
     override fun onStart() {
         super.onStart()
         BackupTrigger.onWake(this)
-        state.overlay = null
+        // Back from Google's sign-in UI: stay on the backup screen.
+        if (!backup.signInPending) state.overlay = null
+        backup.onStart()
         state.decors = nextDecors()
         observer = loader.bridge.registerObserver { quietRefresh() }
         state.needsPermission = !hasStorage()
@@ -219,10 +224,11 @@ class MainActivity : ComponentActivity(), HomeActions {
         }
     }
 
-    /** The clock's minute tick: if midnight passed while home stayed shown, reload quietly. */
+    /** The clock's minute tick: if midnight passed while home stayed shown, reload quietly; reread the backup status. */
     override fun clockTick() {
         val d = state.data
         if (d.loaded && RefreshGuard.dayChanged(d.today, LocalDate.now())) quietRefresh()
+        backup.refreshStatus()
     }
 
     /** «Манга» changed while we are started: reload data only (no new picture, no flash). */
@@ -347,6 +353,11 @@ class MainActivity : ComponentActivity(), HomeActions {
 
     override fun showAbout() {
         state.overlay = Overlay.About
+    }
+
+    override fun showBackup() {
+        state.overlay = Overlay.Backup
+        backup.onShow()
     }
 
     override fun pickDock(index: Int) = showApps(Overlay.DockPick(index))

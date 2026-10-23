@@ -438,6 +438,23 @@ class BackupRunnerTest {
         assertThrows(IOException::class.java) { r.downloadBook(BookEntry("nope.epub", 1, 1), File(tmp.root, "nope")) }
     }
 
+    @Test fun latestSnapshotDateIsTheNewestKoreaderOrElseManga() {
+        val r = runner()
+        assertNull(r.latestSnapshotDate())
+        assertNull(r.latestMangaBackupName())
+
+        run()
+        now = at(day0.plusDays(2))
+        run()
+        assertEquals(day0.plusDays(2), r.latestSnapshotDate())
+        assertEquals("manga-2026-10-25.tachibk", r.latestMangaBackupName())
+
+        // No KOReader snapshot left (or none matching the name): the «Манга» date counts.
+        drive.nodes.values.filter { it.name.startsWith("koreader-") }.map { it.id }.forEach { drive.nodes.remove(it) }
+        drive.nodes.values.filter { it.name == "manga-2026-10-25.tachibk" }.map { it.id }.forEach { drive.nodes.remove(it) }
+        assertEquals(day0, r.latestSnapshotDate())
+    }
+
     @Test fun longCyrillicPathRoundTripsThroughDrive() {
         val rel = "Фантастика/Аркадий и Борис Стругацкие/Собрание сочинений в одиннадцати томах 📚/" +
             "Том седьмой. Понедельник начинается в субботу. Сказка о Тройке. Улитка на склоне (1966).fb2"

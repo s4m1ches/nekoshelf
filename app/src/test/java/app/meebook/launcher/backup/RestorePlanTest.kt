@@ -318,6 +318,21 @@ class RestorePlanTest {
         assertEquals("book-bytes", File(home, book).readText())
     }
 
+    @Test fun restoredBookGetsTheManifestMtime() {
+        liveReaderAndSnapshot()
+        val mtime = 1_600_000_000_000L
+        File(home, book).setLastModified(mtime)
+        val zip = File(tmp.root, "snap-mtime.zip").also { KoreaderSnapshot.build(ko, home, it) }
+        assertEquals(mtime, readManifest(zip).single { it.path == book }.mtime)
+        File(home, book).delete()
+
+        applyRestore(zip, planRestore(zip, ko, home)) { _, dest -> dest.writeText("book-bytes") }
+
+        assertEquals("book-bytes", File(home, book).readText())
+        // Same size + mtime as on Drive: the next backup does not upload it again.
+        assertEquals(mtime, File(home, book).lastModified())
+    }
+
     @Test fun missingKoreaderFileComesBackExistingOneIsKept() {
         val zip = liveReaderAndSnapshot()
         File(ko, "history.lua").delete()

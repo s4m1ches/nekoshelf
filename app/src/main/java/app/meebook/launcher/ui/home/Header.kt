@@ -104,7 +104,8 @@ private val DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM", RU)
  * refresh; filled = on; long-press opens the system screen) with the battery % under
  * them, and the [decors] catgirls standing in the strip above the frame, on its top edge.
  * [onPictureSettled] fires once the picture has been drawn or has failed to load; a long-press
- * on the clock calls [onAbout].
+ * on the clock calls [onAbout]. [backupFailing] puts a small «☁!» left of the battery % (it does
+ * nothing on tap).
  *
  * The clock ticks once a minute while the screen is started; toggle states and battery
  * are re-read then too, and Wi‑Fi follows WIFI_STATE_CHANGED.
@@ -119,6 +120,7 @@ fun Header(
     onPictureSettled: () -> Unit = {},
     onAbout: () -> Unit = {},
     onTick: () -> Unit = {},
+    backupFailing: Boolean = false,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -182,6 +184,7 @@ fun Header(
         modifier = modifier,
         onPictureSettled = onPictureSettled,
         onClockLongPress = onAbout,
+        backupFailing = backupFailing,
     )
 }
 
@@ -204,6 +207,7 @@ internal fun HeaderContent(
     modifier: Modifier = Modifier,
     onPictureSettled: () -> Unit = {},
     onClockLongPress: () -> Unit = {},
+    backupFailing: Boolean = false,
 ) {
     val headerHeight = LocalConfiguration.current.screenHeightDp.dp * HEADER_SHARE
     val stage = headerHeight * STAGE_SHARE
@@ -253,11 +257,11 @@ internal fun HeaderContent(
                     ToggleButton(LightIcon, lightOn, stringResource(R.string.toggle_light), onLight, onLightLong)
                     ToggleButton(RefreshIcon, false, stringResource(R.string.toggle_refresh), onRefresh, null)
                 }
-                if (battery >= 0) {
-                    OutlinedText(
-                        stringResource(R.string.battery_percent, battery), 15, FontWeight.Bold,
-                        outlined = pictureShown, modifier = Modifier.padding(top = 4.dp, end = 4.dp),
-                    )
+                Row(Modifier.padding(top = 4.dp, end = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (backupFailing) OutlinedText(stringResource(R.string.backup_failing_mark), 15, FontWeight.Bold, outlined = pictureShown)
+                    if (battery >= 0) {
+                        OutlinedText(stringResource(R.string.battery_percent, battery), 15, FontWeight.Bold, outlined = pictureShown)
+                    }
                 }
             }
         }
