@@ -4,6 +4,7 @@ import android.database.sqlite.SQLiteDatabase
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -11,7 +12,9 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.io.IOException
 import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 @RunWith(RobolectricTestRunner::class)
@@ -64,6 +67,9 @@ class RestorePlanTest {
         return f
     }
 
+    private fun entryBytes(zip: File, name: String): ByteArray =
+        ZipFile(zip).use { z -> z.getInputStream(z.getEntry(name)).readBytes() }
+
     @Test fun nothingMissingOnLiveReaderMeansEmptyPlan() {
         val zip = liveReaderAndSnapshot()
         val plan = planRestore(zip, ko, home)
@@ -84,10 +90,10 @@ class RestorePlanTest {
         assertEquals(3, plan.items.size)
 
         val calls = ArrayList<BookEntry>()
-        applyRestore(zip, plan) { entry, dest -> calls += entry; dest.writeText("downloaded") }
+        applyRestore(zip, plan) { entry, dest -> calls += entry; dest.writeText("book-bytes") }
 
         assertEquals(listOf(book), calls.map { it.path })
-        assertEquals("downloaded", File(home, book).readText())
+        assertEquals("book-bytes", File(home, book).readText())
         assertArrayEquals(sdrBytes, File(home, "$sdr/metadata.epub.lua").readBytes())
         assertArrayEquals(sdrOldBytes, File(home, "$sdr/metadata.epub.lua.old").readBytes())
         // No temp files left behind.
@@ -137,7 +143,7 @@ class RestorePlanTest {
     @Test fun statsRestoredOnlyWhenMissingOrEmpty() {
         val zip = liveReaderAndSnapshot()
         val local = File(ko, "settings/statistics.sqlite3")
-        val snapshotBytes = local.readBytes()
+        val snapshotBytes = entryBytes(zip, "koreader/settings/statistics.sqlite3")
 
         // Has rows -> kept.
         statsDb(local.also { it.delete() }, rows = 1)
@@ -174,34 +180,95 @@ class RestorePlanTest {
         val zip = zipOf(
             "snap.zip",
             "koreader/settings/statistics.sqlite3" to "snap-db",
+            // Stats siblings must not be in a snapshot (it is consolidated); if one is, it is ignored.
             "koreader/settings/statistics.sqlite3-wal" to "snap-wal",
             "koreader/settings/statistics.sqlite3-shm" to "snap-shm",
+            "koreader/settings/vocab.sqlite3" to "vocab-db",
+            "koreader/settings/vocab.sqlite3-wal" to "vocab-wal",
+            "koreader/settings/vocab.sqlite3-shm" to "vocab-shm",
             "koreader/settings/orphan.sqlite3-wal" to "orphan-wal",
             "books-manifest.json" to "[]",
         )
-        val local = File(ko, "settings/statistics.sqlite3")
+        val stats = File(ko, "settings/statistics.sqlite3")
+        val vocab = File(ko, "settings/vocab.sqlite3")
 
-        // A local -wal left behind (KOReader running or crashed): the DB does not come back.
+        // A local -wal left behind (KOReader running or crashed): that DB does not come back.
         file(ko, "settings/statistics.sqlite3-wal", "local-wal")
+        file(ko, "settings/vocab.sqlite3-wal", "local-wal")
         val blocked = planRestore(zip, ko, home)
         assertFalse(blocked.statsRestored)
         assertTrue(blocked.items.isEmpty())
         File(ko, "settings/statistics.sqlite3-wal").delete()
+        File(ko, "settings/vocab.sqlite3-wal").delete()
 
-        // Missing DB, nothing next to it: the DB and its own -wal come back; -shm is never written.
+        // Missing DBs, nothing next to them: stats comes back as one file; another DB with its own
+        // -wal; -shm and orphan -wal never.
         val plan = planRestore(zip, ko, home)
         assertTrue(plan.statsRestored)
         assertEquals(
-            listOf("koreader/settings/statistics.sqlite3", "koreader/settings/statistics.sqlite3-wal"),
+            listOf("koreader/settings/statistics.sqlite3", "koreader/settings/vocab.sqlite3", "koreader/settings/vocab.sqlite3-wal"),
             plan.items.map { it.zipEntry },
         )
-        // The DB appears on the reader between planning and applying: neither it nor the -wal is written.
-        local.writeText("fresh local db")
+        // The vocab DB appears on the reader between planning and applying: neither it nor its -wal is written.
+        vocab.writeText("fresh local db")
         applyRestore(zip, plan, noDownload)
-        assertEquals("fresh local db", local.readText())
-        assertFalse(File(ko, "settings/statistics.sqlite3-wal").exists())
-        assertFalse(File(ko, "settings/statistics.sqlite3-shm").exists())
-        assertFalse(File(ko, "settings/orphan.sqlite3-wal").exists())
+        assertEquals("snap-db", stats.readText())
+        assertEquals("fresh local db", vocab.readText())
+        assertEquals(setOf("statistics.sqlite3", "vocab.sqlite3"), File(ko, "settings").list()!!.toSet())
+    }
+
+    @Test fun interruptedSdrRestoreLeavesNothingAndIsOfferedAgain() {
+        val zip = liveReaderAndSnapshot()
+        File(home, sdr).deleteRecursively()
+        val plan = planRestore(zip, ko, home)
+        assertEquals(1, plan.sdr)
+        // The same plan against a snapshot that breaks after the .sdr's first file (CRC error, disk full).
+        val broken = zipOf(
+            "broken.zip",
+            "books/$sdr/metadata.epub.lua" to "progress 42%",
+            "books-manifest.json" to "[]",
+        )
+
+        assertThrows(IOException::class.java) { applyRestore(broken, plan, noDownload) }
+
+        assertFalse(File(home, sdr).exists())
+        assertEquals(setOf(File(book).name), File(home, book).parentFile!!.list()!!.toSet())
+        val again = planRestore(zip, ko, home)
+        assertEquals(1, again.sdr)
+        applyRestore(zip, again, noDownload)
+        assertEquals(setOf("metadata.epub.lua", "metadata.epub.lua.old"), File(home, sdr).list()!!.toSet())
+    }
+
+    @Test fun shortDownloadIsNotPlacedAndBookIsOfferedAgain() {
+        val zip = liveReaderAndSnapshot()
+        File(home, book).delete()
+        val plan = planRestore(zip, ko, home)
+
+        assertThrows(IOException::class.java) { applyRestore(zip, plan) { _, _ -> /* wrote nothing */ } }
+        assertThrows(IOException::class.java) { applyRestore(zip, plan) { _, dest -> dest.writeText("book") } }
+
+        assertFalse(File(home, book).exists())
+        assertEquals(setOf(File(sdr).name), File(home, book).parentFile!!.list()!!.toSet())
+        assertEquals(1, planRestore(zip, ko, home).books)
+    }
+
+    @Test fun staleTempsOfAKilledRestoreAreRemoved() {
+        val zip = liveReaderAndSnapshot()
+        File(home, book).delete()
+        File(home, sdr).deleteRecursively()
+        File(ko, "history.lua").delete()
+        val bookDir = File(home, book).parentFile!!
+        file(bookDir, ".restore-123.tmp", "half a book")
+        file(bookDir, ".restore-${File(sdr).name}-99.tmp/metadata.epub.lua", "half an sdr")
+        file(ko, ".restore-456.tmp", "half a history")
+        file(bookDir, ".restore-keep.txt", "not ours: wrong suffix")
+        val plan = planRestore(zip, ko, home)
+
+        applyRestore(zip, plan) { _, dest -> dest.writeText("book-bytes") }
+
+        assertEquals(setOf(File(book).name, File(sdr).name, ".restore-keep.txt"), bookDir.list()!!.toSet())
+        assertFalse(File(ko, ".restore-456.tmp").exists())
+        assertEquals("book-bytes", File(home, book).readText())
     }
 
     @Test fun missingKoreaderFileComesBackExistingOneIsKept() {
@@ -226,7 +293,7 @@ class RestorePlanTest {
         File(ko, "history.lua").writeText("written by KOReader meanwhile")
 
         applyRestore(zip, plan) { _, dest ->
-            dest.writeText("downloaded")
+            dest.writeText("book-bytes")
             File(home, book).writeText("copied over USB meanwhile")
         }
 

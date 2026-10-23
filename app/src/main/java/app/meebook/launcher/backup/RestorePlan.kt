@@ -23,11 +23,12 @@ data class RestorePlan(val items: List<RestoreItem>, val books: Int, val sdr: In
  * - a `.sdr` folder: the reader has no folder at that path at all (even an empty one counts);
  * - a KOReader file: it does not exist, and no `-wal`/`-shm`/`-journal` of it exists either
  *   (they would pair with the restored file);
- * - `settings/statistics.sqlite3`: as above, or the local DB is readable and has 0 rows in
- *   `page_stat_data` (a 0-byte file counts as empty; an unreadable DB or one without that table
- *   is kept);
- * - a `-wal`/`-journal` of a SQLite file: only together with that file; `-shm` never (SQLite
- *   rebuilds it). Entries that could land outside the target dirs are dropped.
+ * - `settings/statistics.sqlite3` (a single consolidated file in the snapshot): as above, or the
+ *   local DB is readable and has 0 rows in `page_stat_data` (a 0-byte file counts as empty; an
+ *   unreadable DB or one without that table is kept). Stats `-wal`/`-shm`/`-journal` entries
+ *   are never restored;
+ * - a `-wal`/`-journal` of another SQLite file: only together with that file, never on its own;
+ *   `-shm` never (SQLite rebuilds it). Entries that could land outside the target dirs are dropped.
  */
 fun planRestore(zip: File, koreaderRoot: File, homeDir: File): RestorePlan {
     val manifest = readManifest(zip)
@@ -39,7 +40,7 @@ fun planRestore(zip: File, koreaderRoot: File, homeDir: File): RestorePlan {
     for (name in names) {
         if (!name.startsWith(KOREADER_PREFIX)) continue
         val rel = name.removePrefix(KOREADER_PREFIX)
-        if (!isSnapshotKoreaderPath(rel)) continue
+        if (!isSnapshotKoreaderPath(rel) || isStatsSibling(rel)) continue
         val target = resolveInside(koreaderRoot, rel) ?: continue
         val base = sqliteBaseOf(rel)
         if (base != null) {
@@ -74,56 +75,83 @@ fun planRestore(zip: File, koreaderRoot: File, homeDir: File): RestorePlan {
 }
 
 /**
- * Writes [plan]'s items: each through a temp file in the target's folder, renamed into place
- * only if the target is still missing at that moment (the empty stats DB: still empty). A `.sdr`
- * folder that appeared since planning is skipped whole, and so is a `-wal` whose DB was not
- * written. Books are fetched by [downloadBook] into the temp file it is given. Stops on the
- * first error; running it again only fills what is still missing.
+ * Writes [plan]'s items, never over anything that exists:
+ * - first removes `.restore-*.tmp` leftovers of a killed earlier run from the folders it touches;
+ * - a KOReader file goes through a temp file in its folder, renamed in only if the target is
+ *   still missing (the stats DB: still empty) and no `-wal`/`-shm`/`-journal` sits next to it;
+ *   a `-wal`/`-journal` only if its own file was just written;
+ * - a `.sdr` folder is extracted whole into a temp folder next to it and renamed in as one unit,
+ *   only if no folder of that name exists by then — a failure leaves nothing behind, so the next
+ *   plan still offers it;
+ * - a book is fetched by [downloadBook] into the temp file it is given and placed only if it has
+ *   the manifest's size (otherwise [IOException]).
+ * Stops on the first error; running it again only fills what is still missing.
  */
 fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -> Unit) {
-    val writtenBases = HashSet<String>()
-    val sdrCreatedHere = HashSet<File>()
+    val koItems = ArrayList<RestoreItem>()
+    val bookItems = ArrayList<RestoreItem>()
+    val sdrGroups = LinkedHashMap<File, MutableList<Pair<String, String>>>() // .sdr dir -> (entry, path inside it)
+    for (item in plan.items) {
+        val entry = item.zipEntry
+        when {
+            item.book != null -> bookItems += item
+            entry == null -> Unit
+            entry.startsWith(KOREADER_PREFIX) -> koItems += item
+            entry.startsWith(BOOKS_PREFIX) -> {
+                val rel = entry.removePrefix(BOOKS_PREFIX)
+                val root = sdrRootOf(rel) ?: continue
+                val depth = rel.count { it == '/' } - root.count { it == '/' }
+                val sdrDir = generateSequence(item.target) { it.parentFile }.elementAtOrNull(depth) ?: continue
+                sdrGroups.getOrPut(sdrDir) { ArrayList() } += entry to rel.removePrefix("$root/")
+            }
+        }
+    }
+
+    (koItems.map { it.target.parentFile } + sdrGroups.keys.map { it.parentFile } + bookItems.map { it.target.parentFile })
+        .filterNotNull().toSet().forEach(::removeStaleTemps)
+
     ZipFile(zip).use { z ->
-        for (item in plan.items) {
-            val entry = item.zipEntry
+        val writtenBases = HashSet<String>()
+        for (item in koItems) {
+            val entry = item.zipEntry!!
             val target = item.target
-            when {
-                item.book != null -> {
-                    if (target.exists()) continue
-                    place(target, fill = { tmp -> downloadBook(item.book, tmp) })
-                }
-                entry == null -> continue
-                entry.startsWith(KOREADER_PREFIX) -> {
-                    val rel = entry.removePrefix(KOREADER_PREFIX)
-                    val base = sqliteBaseOf(rel)
-                    val fill = { tmp: File -> copyEntry(z, entry, tmp) }
-                    if (base != null) {
-                        if (rel.endsWith("-shm") || base !in writtenBases || target.exists()) continue
-                        place(target, fill)
-                    } else {
-                        if (!koreaderFileRestorable(rel, target)) continue
-                        val placed = place(
-                            target, fill,
-                            precondition = { siblingsAbsent(target) },
-                            mayReplace = { rel == STATS_REL && isEmptyStatsDb(target) },
-                        )
-                        if (placed) writtenBases += rel
-                    }
-                }
-                entry.startsWith(BOOKS_PREFIX) -> {
-                    val rel = entry.removePrefix(BOOKS_PREFIX)
-                    val root = sdrRootOf(rel) ?: continue
-                    val depth = rel.count { it == '/' } - root.count { it == '/' }
-                    val sdrDir = generateSequence(target) { it.parentFile }.elementAtOrNull(depth) ?: continue
-                    if (sdrDir.exists()) {
-                        if (sdrDir !in sdrCreatedHere) continue
-                    } else {
-                        sdrCreatedHere += sdrDir
-                    }
-                    if (target.exists()) continue
-                    place(target, fill = { tmp -> copyEntry(z, entry, tmp) })
+            val rel = entry.removePrefix(KOREADER_PREFIX)
+            if (isStatsSibling(rel)) continue
+            val base = sqliteBaseOf(rel)
+            val fill = { tmp: File -> copyEntry(z, entry, tmp) }
+            if (base != null) {
+                if (rel.endsWith("-shm") || base !in writtenBases || target.exists()) continue
+                place(target, fill)
+            } else {
+                if (!koreaderFileRestorable(rel, target)) continue
+                val placed = place(
+                    target, fill,
+                    precondition = { siblingsAbsent(target) },
+                    mayReplace = { rel == STATS_REL && isEmptyStatsDb(target) },
+                )
+                if (placed) writtenBases += rel
+            }
+        }
+
+        for ((sdrDir, files) in sdrGroups) {
+            if (sdrDir.exists()) continue
+            placeDir(sdrDir) { tmpDir ->
+                for ((entry, inner) in files) {
+                    val f = resolveInside(tmpDir, inner) ?: throw IOException("unsafe entry $entry")
+                    f.parentFile!!.mkdirs()
+                    copyEntry(z, entry, f)
                 }
             }
+        }
+
+        for (item in bookItems) {
+            val book = item.book!!
+            if (item.target.exists()) continue
+            place(item.target, fill = { tmp ->
+                downloadBook(book, tmp)
+                val got = if (tmp.isFile) tmp.length() else -1L
+                if (got != book.size) throw IOException("${book.path}: downloaded $got bytes, expected ${book.size}")
+            })
         }
     }
 }
@@ -176,6 +204,14 @@ private fun copyEntry(z: ZipFile, name: String, dest: File) {
     z.getInputStream(e).use { input -> dest.outputStream().use { input.copyTo(it) } }
 }
 
+private const val TEMP_PREFIX = ".restore-"
+private const val TEMP_SUFFIX = ".tmp"
+
+/** Deletes temp files/folders a killed restore left in [dir] (only our own `.restore-*.tmp` names). */
+private fun removeStaleTemps(dir: File) {
+    dir.listFiles()?.forEach { if (it.name.startsWith(TEMP_PREFIX) && it.name.endsWith(TEMP_SUFFIX)) it.deleteRecursively() }
+}
+
 /**
  * Fills a temp file next to [target], then renames it in. Right before the rename: [precondition]
  * must hold, and an existing target is replaced only if [mayReplace] says so (otherwise the
@@ -189,10 +225,9 @@ private fun place(
 ): Boolean {
     val dir = target.parentFile ?: throw IOException("no parent for $target")
     if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create $dir")
-    val tmp = File.createTempFile(".restore-", ".tmp", dir)
+    val tmp = File.createTempFile(TEMP_PREFIX, TEMP_SUFFIX, dir)
     try {
         fill(tmp)
-        if (!tmp.isFile) throw IOException("nothing written for $target")
         if (!precondition()) return false
         if (target.exists()) {
             if (!mayReplace()) return false
@@ -207,5 +242,28 @@ private fun place(
         return true
     } finally {
         tmp.delete()
+    }
+}
+
+/**
+ * Fills a temp folder next to [target] and renames the whole folder in, only if nothing exists
+ * at [target] by then. On any failure the temp folder is removed and [target] never appears.
+ */
+private fun placeDir(target: File, fill: (File) -> Unit): Boolean {
+    val dir = target.parentFile ?: throw IOException("no parent for $target")
+    if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create $dir")
+    val tmp = File(dir, "$TEMP_PREFIX${target.name}-${System.nanoTime()}$TEMP_SUFFIX")
+    if (!tmp.mkdir()) throw IOException("cannot create $tmp")
+    try {
+        fill(tmp)
+        if (target.exists()) return false
+        try {
+            Files.move(tmp.toPath(), target.toPath()) // no REPLACE_EXISTING: fails if it appeared
+        } catch (e: FileAlreadyExistsException) {
+            return false
+        }
+        return true
+    } finally {
+        if (tmp.exists()) tmp.deleteRecursively()
     }
 }

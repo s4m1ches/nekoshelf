@@ -1,10 +1,13 @@
 package app.meebook.launcher.backup
 
+import android.database.sqlite.SQLiteDatabase
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -15,11 +18,13 @@ data class BookEntry(val path: String, val size: Long, val mtime: Long)
 /**
  * Every regular file under [homeDir] (any extension), skipping names that start with "." and
  * `*.sdr` folders (case-insensitive) — the same walk rules as `BookScanner`. Sorted by path.
+ * Throws [IOException] when [homeDir] (or a folder inside it) cannot be listed: an empty
+ * manifest from an unreadable folder would later restore nothing.
  */
 fun scanBooks(homeDir: File): List<BookEntry> {
     val out = ArrayList<BookEntry>()
     fun walk(dir: File, prefix: String) {
-        for (c in dir.listFiles() ?: return) {
+        for (c in listOrThrow(dir)) {
             val name = c.name
             if (name.startsWith(".")) continue
             if (c.isDirectory) {
@@ -29,32 +34,45 @@ fun scanBooks(homeDir: File): List<BookEntry> {
             }
         }
     }
-    walk(homeDir, "")
+    walk(requireReadableDir(homeDir), "")
     return out.sortedBy { it.path }
 }
 
 /**
  * One daily KOReader snapshot zip. Entries:
- * - `koreader/<path under koreaderRoot>` for the files [isSnapshotKoreaderPath] accepts
- *   (the stats DB comes with its `-wal`/`-shm`, since they live in `settings/` too);
+ * - `koreader/<path under koreaderRoot>` for the files [isSnapshotKoreaderPath] accepts;
+ *   `settings/statistics.sqlite3` is a single self-contained DB (its `-wal` checkpointed into it,
+ *   integrity-checked) and never comes with `-wal`/`-shm`/`-journal` entries;
  * - `books/<rel>.sdr/...` for every `.sdr` folder under the books home dir;
  * - [MANIFEST_ENTRY]: `[{path,size,mtime}]` of [scanBooks].
  */
 object KoreaderSnapshot {
-    /** Writes the snapshot to [out] (replacing it) and returns the books manifest written into it. */
+    /**
+     * Writes the snapshot to [out] (replacing it; written to a temp file next to it and renamed
+     * at the end, so [out] is never a truncated zip) and returns the books manifest inside it.
+     * Throws when either root is not a readable folder or the stats DB fails its integrity check.
+     */
     fun build(koreaderRoot: File, homeDir: File, out: File): List<BookEntry> {
+        requireReadableDir(koreaderRoot)
         val manifest = scanBooks(homeDir)
+        val dir = out.absoluteFile.parentFile ?: throw IOException("no folder for $out")
+        dir.mkdirs()
+        val tmp = File.createTempFile(".snapshot-", ".tmp", dir)
+        val work = Files.createTempDirectory(dir.toPath(), ".snapshot-stats-").toFile()
         try {
-            ZipOutputStream(out.outputStream().buffered()).use { zip ->
-                for ((rel, f) in koreaderFiles(koreaderRoot)) addFile(zip, "$KOREADER_PREFIX$rel", f)
+            ZipOutputStream(tmp.outputStream().buffered()).use { zip ->
+                for ((rel, f) in koreaderFiles(koreaderRoot)) {
+                    if (rel == STATS_REL) addStats(zip, f, work) else addFile(zip, "$KOREADER_PREFIX$rel", f)
+                }
                 for ((rel, f) in sdrFiles(homeDir)) addFile(zip, "$BOOKS_PREFIX$rel", f)
                 zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
                 zip.write(manifestJson(manifest).toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
             }
-        } catch (e: Exception) {
-            out.delete()
-            throw e
+            Files.move(tmp.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            tmp.delete()
+            work.deleteRecursively()
         }
         return manifest
     }
@@ -62,10 +80,10 @@ object KoreaderSnapshot {
     private fun koreaderFiles(root: File): List<Pair<String, File>> {
         val out = ArrayList<Pair<String, File>>()
         fun walk(dir: File, prefix: String) {
-            for (c in (dir.listFiles() ?: return).sortedBy { it.name }) {
+            for (c in listOrThrow(dir).sortedBy { it.name }) {
                 val rel = prefix + c.name
                 if (c.isDirectory) walk(c, "$rel/")
-                else if (c.isFile && isSnapshotKoreaderPath(rel)) out += rel to c
+                else if (c.isFile && isSnapshotKoreaderPath(rel) && !isStatsSibling(rel)) out += rel to c
             }
         }
         for (top in KOREADER_FILES) File(root, top).takeIf { it.isFile }?.let { out += top to it }
@@ -77,12 +95,12 @@ object KoreaderSnapshot {
     private fun sdrFiles(home: File): List<Pair<String, File>> {
         val out = ArrayList<Pair<String, File>>()
         fun all(dir: File, prefix: String) {
-            for (c in (dir.listFiles() ?: return).sortedBy { it.name }) {
+            for (c in listOrThrow(dir).sortedBy { it.name }) {
                 if (c.isDirectory) all(c, "$prefix${c.name}/") else if (c.isFile) out += "$prefix${c.name}" to c
             }
         }
         fun walk(dir: File, prefix: String) {
-            for (c in (dir.listFiles() ?: return).sortedBy { it.name }) {
+            for (c in listOrThrow(dir).sortedBy { it.name }) {
                 if (c.name.startsWith(".") || !c.isDirectory) continue
                 if (isSdrName(c.name)) all(c, "$prefix${c.name}/") else walk(c, "$prefix${c.name}/")
             }
@@ -91,9 +109,40 @@ object KoreaderSnapshot {
         return out
     }
 
+    /**
+     * Copies the stats DB with its `-wal`/`-journal` into [work], checkpoints the copy into one
+     * file (`journal_mode=DELETE`), requires `integrity_check` = ok and zips only that file.
+     * `-shm` is not copied: it holds nothing persistent and SQLite rebuilds it from the `-wal`.
+     */
+    private fun addStats(zip: ZipOutputStream, db: File, work: File) {
+        val copy = File(work, "statistics.sqlite3")
+        db.copyTo(copy, overwrite = true)
+        for (s in listOf("-wal", "-journal")) {
+            val src = File(db.path + s)
+            if (src.isFile) src.copyTo(File(copy.path + s), overwrite = true)
+        }
+        val conn = SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READWRITE)
+        try {
+            conn.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+            conn.rawQuery("PRAGMA journal_mode=DELETE", null).use { it.moveToFirst() }
+            val check = conn.rawQuery("PRAGMA integrity_check", null).use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            if (check != "ok") throw IOException("statistics.sqlite3 integrity_check: $check")
+        } finally {
+            conn.close()
+        }
+        val wal = File(copy.path + "-wal")
+        if (wal.exists() && wal.length() > 0) throw IOException("statistics.sqlite3 -wal not checkpointed")
+        addFile(zip, "$KOREADER_PREFIX$STATS_REL", copy)
+    }
+
     private fun addFile(zip: ZipOutputStream, name: String, f: File) {
-        // A file can vanish while we walk (KOReader rotating *.old); skip it instead of failing the day.
-        val input = try { f.inputStream() } catch (e: FileNotFoundException) { return }
+        // A file can vanish while we walk (KOReader rotating *.old): skip it. One that is still
+        // there but cannot be opened (Android also throws FileNotFoundException for EACCES) fails.
+        val input = try {
+            f.inputStream()
+        } catch (e: FileNotFoundException) {
+            if (f.exists()) throw e else return
+        }
         input.use {
             zip.putNextEntry(ZipEntry(name).apply { time = f.lastModified() })
             it.copyTo(zip)
@@ -129,6 +178,18 @@ private val KOREADER_DIRS = listOf("settings", "patches", "styletweaks")
 private const val BOOKINFO_CACHE = "bookinfo_cache.sqlite3"
 
 internal fun isSdrName(name: String) = name.endsWith(".sdr", ignoreCase = true)
+
+/** `settings/statistics.sqlite3-wal` / `-shm` / `-journal`: never zipped, never restored. */
+internal fun isStatsSibling(rel: String) = SQLITE_SIBLINGS.any { rel == STATS_REL + it }
+
+private fun requireReadableDir(dir: File): File {
+    if (!dir.isDirectory || dir.listFiles() == null) throw IOException("not a readable folder: $dir")
+    return dir
+}
+
+/** Children of [dir]; empty if it vanished meanwhile, [IOException] if it is there but unreadable. */
+private fun listOrThrow(dir: File): Array<File> =
+    dir.listFiles() ?: if (dir.exists()) throw IOException("cannot list $dir") else emptyArray()
 
 /** Whether a path under the KOReader root belongs in the snapshot (and so may be restored). */
 internal fun isSnapshotKoreaderPath(rel: String): Boolean {
