@@ -1,6 +1,8 @@
 package app.nekoshelf.launcher.backup
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Environment
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -22,6 +24,11 @@ import java.time.ZoneId
  * tries again. While a restore offer or a restore holds backups it does nothing at all (not even ask
  * for a token). A null token means the owner must sign in again; a token that is merely unavailable
  * for now ([app.nekoshelf.launcher.backup.drive.TokenUnavailableException]) is recorded as «нет сети».
+ *
+ * With «Забирать новые книги» on, it also asks for a token with `drive.readonly`: given, the run
+ * gets the inbox step and the readonly view ([backupRunner]); not given (null: the grant is gone,
+ * or Play services failing for now), this run goes on as with the checkbox off and only the
+ * inbox's error is recorded ([recordInboxFailure], a [DriveAuthException] for a missing grant).
  */
 class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -34,8 +41,9 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             if (token() == null) {
                 fail(store, BACKUP_ERROR_AUTH, countsForAuto = !manual)
             } else {
+                val readonly = if (store.load().inboxEnabled) readonlyToken(app, store) else null
                 val power = { BackupTrigger.readPower(app) }
-                runnerFactory(app, store, token).run(power(), manual, power)
+                runnerFactory(app, store, token, readonly).run(power(), manual, power)
             }
         } catch (e: CancellationException) {
             throw e
@@ -43,6 +51,21 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             fail(store, backupErrorText(e), countsForAuto = !manual && !isNetworkClass(e))
         }
         Result.success()
+    }
+
+    /** The readonly token source when it gives a token now; otherwise null, with the inbox's error recorded. */
+    private fun readonlyToken(app: Context, store: BackupStore): (() -> String?)? {
+        val source = readonlyTokenSource(app)
+        val failure = try {
+            if (source() != null) return source
+            DriveAuthException("no drive.readonly token without the owner")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e
+        }
+        recordInboxFailure(store, failure)
+        return null
     }
 
     /** Records a failure outside the runner; [countsForAuto] adds it to today's failed automatic runs (R32). */
@@ -56,9 +79,10 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     }
 
     internal companion object {
-        /** Test hooks: where the access token comes from, and how the runner is built. */
+        /** Test hooks: where the access tokens come from (drive.file, and drive.file + drive.readonly), and how the runner is built. */
         var tokenSource: (Context) -> (() -> String?) = { GoogleAuth(it)::silentToken }
-        var runnerFactory: (Context, BackupStore, () -> String?) -> BackupRunner = ::backupRunner
+        var readonlyTokenSource: (Context) -> (() -> String?) = { GoogleAuth(it).let { a -> { a.silentToken(withReadonly = true) } } }
+        var runnerFactory: (Context, BackupStore, () -> String?, (() -> String?)?) -> BackupRunner = ::backupRunner
     }
 }
 
@@ -70,11 +94,21 @@ fun koreaderHomeDir(): File = KoreaderPaths(koreaderRoot()).homeDir()
 
 /**
  * The runner on the real Drive, KOReader folders and «Манга» bridge, as the worker and the backup
- * screen (sign-in check, restore) both use it. [token] is asked for before every Drive call.
+ * screen (sign-in check, restore) both use it. [token] (drive.file) is asked for before every Drive
+ * call.
+ *
+ * [readonlyToken] (drive.file + drive.readonly; non-null only while the inbox checkbox is on and the
+ * grant was given) adds the inbox step and the readonly view: the backup's Drive then asks it first
+ * (falling back to [token] should it stop giving one mid-run, so a lost grant never fails the
+ * backup), and the inbox's own Drive asks only it (none → [DriveAuthException], the inbox's error).
  */
-fun backupRunner(app: Context, store: BackupStore, token: () -> String?): BackupRunner =
-    BackupRunner(
-        drive = DriveRest(token = { token() ?: throw DriveAuthException("token unavailable") }),
+fun backupRunner(app: Context, store: BackupStore, token: () -> String?, readonlyToken: (() -> String?)? = null): BackupRunner {
+    fun drive(t: () -> String?) = DriveRest(token = { t() ?: throw DriveAuthException("token unavailable") })
+    val inbox = readonlyToken?.let { ro ->
+        InboxRunner(drive(ro), store, ::koreaderHomeDir, { it.usableSpace }, System::currentTimeMillis)
+    }
+    return BackupRunner(
+        drive = if (readonlyToken == null) drive(token) else drive { readonlyToken() ?: token() },
         store = store,
         koreaderRoot = koreaderRoot(),
         homeDir = ::koreaderHomeDir,
@@ -83,4 +117,17 @@ fun backupRunner(app: Context, store: BackupStore, token: () -> String?): Backup
         cacheDir = app.cacheDir,
         clock = System::currentTimeMillis,
         zone = ZoneId.systemDefault(),
+        inbox = inbox,
+        unmetered = { isUnmetered(app) },
+        readonly = readonlyToken != null,
     )
+}
+
+/** Whether the active network is unmetered (Wi-Fi as a rule); false when unknown. */
+fun isUnmetered(app: Context): Boolean = try {
+    val cm = app.getSystemService(ConnectivityManager::class.java)
+    val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+    caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == true
+} catch (e: Exception) {
+    false
+}

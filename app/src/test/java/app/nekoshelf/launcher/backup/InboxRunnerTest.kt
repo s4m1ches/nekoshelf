@@ -380,6 +380,22 @@ class InboxRunnerTest {
         assertTrue(drive.deletes.isEmpty())
     }
 
+    @Test fun cutOffSeenFileIsFatalNotCorrupt() {
+        val a = userFile(books, "a.epub")
+        val seenId = putSeenFile(a)
+        store.saveInboxSeen(emptySet()) // a wiped reader
+        drive.serveBytes[seenId] = """{"ids":["""".toByteArray() // shorter than the file: not its content
+        drive.uploads.clear()
+
+        val r = run()
+
+        assertEquals(InboxResult(0, 0, "не удалось получить книгу с Диска"), r)
+        assertFalse(local("a.epub").exists())
+        assertTrue(seenId in drive.nodes)
+        assertTrue(drive.uploads.isEmpty())
+        assertTrue(drive.deletes.isEmpty())
+    }
+
     @Test fun seenFileThatVanishedIsSkippedNotDeleted() {
         val a = userFile(books, "a.epub")
         val b = userFile(books, "b.epub", "B")

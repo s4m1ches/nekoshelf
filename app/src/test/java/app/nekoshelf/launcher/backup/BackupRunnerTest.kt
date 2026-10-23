@@ -10,6 +10,7 @@ import app.nekoshelf.launcher.backup.drive.ResumeStore
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -27,8 +28,11 @@ import org.robolectric.Robolectric
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.time.LocalDate
@@ -87,6 +91,15 @@ class FakeDrive : Drive {
     /** Ids passed to [download], in order. */
     val downloads = ArrayList<String>()
 
+    /** [listTree] calls (the readonly-only listing). */
+    var treeCalls = 0
+
+    /** Downloads of these ids write these bytes instead of the file's own (a cut-off transfer). */
+    val serveBytes = HashMap<String, ByteArray>()
+
+    /** Called at the start of every upload with the file's name (e.g. to hold a thread there). */
+    var onUpload: ((String) -> Unit)? = null
+
     /** A file someone (the owner via Drive's UI, or the app) put under [parent]; returns its id. */
     fun put(
         parent: String,
@@ -136,6 +149,7 @@ class FakeDrive : Drive {
 
     override fun listTree(rootId: String): List<TreeFile> {
         call()
+        treeCalls++
         failListTree?.let { throw it }
         val out = ArrayList<TreeFile>()
         fun walk(id: String, prefix: String) {
@@ -157,6 +171,7 @@ class FakeDrive : Drive {
 
     override fun upload(parent: String, name: String, file: File, props: Map<String, String>, resume: ResumeStore?): RemoteFile {
         call()
+        onUpload?.invoke(name)
         if (props["kind"] == "book") {
             bookUploads++
             if (bookUploads == failBookUpload) throw bookUploadError
@@ -179,7 +194,7 @@ class FakeDrive : Drive {
         call()
         downloads += id
         failDownload[id]?.let { throw it }
-        to.writeBytes(nodes[id]?.bytes ?: throw DriveException(404, "not found"))
+        to.writeBytes(serveBytes[id] ?: nodes[id]?.bytes ?: throw DriveException(404, "not found"))
     }
 
     override fun delete(id: String) {
@@ -248,7 +263,8 @@ class BackupRunnerTest {
     private fun book(rel: String, text: String, mtime: Long = 1_700_000_000_000L): File =
         File(home, rel).also { it.parentFile!!.mkdirs(); it.writeText(text); it.setLastModified(mtime) }
 
-    private fun runner() = BackupRunner(drive, store, ko, { home }, { manga() }, { mangaAvailable() }, cache, { now }, zone)
+    private fun runner(inbox: InboxRunner? = null, unmetered: Boolean = true, readonly: Boolean = inbox != null) =
+        BackupRunner(drive, store, ko, { home }, { manga() }, { mangaAvailable() }, cache, { now }, zone, inbox, { unmetered }, readonly)
 
     private fun run(power: Power = charging, manual: Boolean = false, powerNow: () -> Power = { power }) =
         runner().run(power, manual, powerNow)
@@ -925,5 +941,261 @@ class BackupRunnerTest {
         assertEquals("https://x/upload?id=1|2&a=b" to 262144L, store.get("f1|a|b.epub|10|2"))
         store.clear("f1|a|b.epub|10|2")
         assertNull(store.get("f1|a|b.epub|10|2"))
+    }
+
+    // ---- the inbox and the readonly view -------------------------------------------------------
+
+    private fun inbox(d: Drive = drive) = InboxRunner(d, store, { home }, { Long.MAX_VALUE }, { now })
+
+    private fun booksFolder() = drive.folder("books", drive.folder("Nekoshelf", null))
+
+    private fun userFile(parent: String, name: String, text: String) =
+        drive.put(parent, name, text.toByteArray(), mimeType = "application/epub+zip")
+
+    /** A run with the readonly grant (the checkbox on); [inbox] null when only the readonly view is wanted. */
+    private fun grantedRun(inbox: InboxRunner? = inbox(), unmetered: Boolean = true, power: Power = charging) =
+        runner(inbox, unmetered, readonly = true).run(power, false) { power }
+
+    @Test fun inboxStepRunsFirstWhenEnabledAndUnmetered() {
+        run()
+        val series = drive.putFolder(booksFolder(), "Серия")
+        userFile(series, "Том 1.epub", "том")
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+
+        val s = grantedRun()
+
+        assertEquals("том", File(home, "Серия/Том 1.epub").readText())
+        assertEquals(1, s.inboxReceived)
+        assertNull(s.inboxError)
+        assertEquals(now, s.inboxLastCheckAt)
+        // The inbox's seen file went up before the snapshot, and the book was not uploaded back.
+        assertEquals(listOf(INBOX_SEEN_FILE, "koreader-2026-10-24.zip", "manga-2026-10-24.tachibk"), drive.uploads)
+        val zip = File(tmp.newFolder(), "k.zip").also { it.writeBytes(drive.files()["Nekoshelf/koreader/koreader-2026-10-24.zip"]!!.bytes) }
+        assertTrue("Серия/Том 1.epub" in readManifest(zip).map { it.path })
+        assertEquals(now, s.lastSuccessAt)
+        assertNull(s.lastError)
+        assertEquals(4, s.booksLocal)
+        assertEquals(4, s.booksOnDrive)
+        assertEquals(0, s.booksPending)
+    }
+
+    @Test fun inboxWaitsForAnUnmeteredNetwork() {
+        run()
+        userFile(booksFolder(), "new.epub", "n")
+        drive.downloads.clear()
+        now = at(day0.plusDays(1))
+
+        val s = grantedRun(unmetered = false)
+
+        assertFalse(File(home, "new.epub").exists())
+        assertTrue(drive.downloads.isEmpty())
+        assertNull(s.inboxLastCheckAt)
+        assertEquals(now, s.lastSuccessAt)
+    }
+
+    @Test fun restoreHoldPausesTheInboxStepToo() {
+        run()
+        userFile(booksFolder(), "new.epub", "n")
+        store.update { it.copy(restoreOfferPending = true) }
+        val calls = drive.calls
+
+        grantedRun()
+
+        assertEquals(calls, drive.calls)
+        assertFalse(File(home, "new.epub").exists())
+    }
+
+    @Test fun inboxFailureDoesNotFailBackup() {
+        run()
+        val dropped = userFile(booksFolder(), "new.epub", "n")
+        now = at(day0.plusDays(1))
+        // Readonly access lost: every call of the inbox's Drive is rejected.
+        val revoked = FakeDrive().apply { failEverything = DriveAuthException("Google Drive rejected the access token (HTTP 401)") }
+
+        val s = grantedRun(inbox(revoked))
+
+        assertEquals(INBOX_ERROR_NO_ACCESS, s.inboxError)
+        assertEquals(now, s.lastSuccessAt)
+        assertNull(s.lastError)
+        assertNull(s.lastFailureAt)
+        assertEquals(0, s.failedAutoAttempts)
+        assertTrue("koreader-2026-10-24.zip" in drive.filesIn("Nekoshelf/koreader"))
+        assertFalse(File(home, "new.epub").exists())
+
+        // A download cut off by the network stops only the inbox.
+        drive.failDownload[dropped] = SocketTimeoutException("timeout")
+        now += 60_000
+        val t = grantedRun()
+        assertEquals("нет сети", t.inboxError)
+        assertEquals(now, t.lastSuccessAt)
+        assertNull(t.lastError)
+
+        // Even an inbox that throws out of its run.
+        now += 60_000
+        val broken = InboxRunner(drive, store, { home }, { Long.MAX_VALUE }, { throw IllegalStateException("clock") })
+        val u = grantedRun(broken)
+        assertEquals(now, u.lastSuccessAt)
+        assertNull(u.lastError)
+    }
+
+    @Test fun localBookPresentAsUserFileIsNotUploaded() {
+        run()
+        val books = booksFolder()
+        userFile(books, "own.epub", "the owner's copy, another size")
+        userFile(drive.putFolder(books, "Серия"), "Том 2.epub", "t2")
+        book("own.epub", "mine")
+        book("Серия/Том 2.epub", "t2")
+        book("fresh.epub", "f")
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+
+        val s = grantedRun(inbox = null)
+
+        assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk", "fresh.epub"), drive.uploads)
+        assertEquals(1, drive.nodes.values.count { it.name == "own.epub" })
+        assertEquals(1, drive.nodes.values.count { it.name == "Том 2.epub" })
+        assertEquals(0, s.booksPending)
+        assertEquals(6, s.booksLocal)
+        assertEquals(6, s.booksOnDrive)
+    }
+
+    @Test fun inboxWorkerHoldingTheGuardCausesNoDuplicateUpload() {
+        run()
+        userFile(booksFolder(), "dropped.epub", "dropped")
+        now = at(day0.plusDays(1))
+        val landed = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        // The wake's inbox work holds the guard, its book already in place.
+        drive.onUpload = { name ->
+            if (name == INBOX_SEEN_FILE && Thread.currentThread().name == "inbox-worker") {
+                landed.countDown()
+                release.await(10, TimeUnit.SECONDS)
+            }
+        }
+        var workerResult: InboxResult? = null
+        val worker = Thread({ workerResult = inbox().run() }, "inbox-worker")
+        worker.start()
+        assertTrue(landed.await(10, TimeUnit.SECONDS))
+        assertTrue(File(home, "dropped.epub").exists())
+        val downloads = drive.downloads.toList()
+
+        val s = grantedRun() // its own inbox step finds the guard taken and goes on
+
+        release.countDown()
+        worker.join(10_000)
+        assertEquals(1, workerResult!!.received)
+        assertEquals(downloads, drive.downloads)
+        assertTrue("dropped.epub" !in drive.uploads)
+        assertEquals(1, drive.nodes.values.count { it.name == "dropped.epub" })
+        assertEquals(now, s.lastSuccessAt)
+        assertEquals(0, s.booksPending)
+        assertEquals(4, s.booksLocal)
+    }
+
+    @Test fun countsIncludeUserFilesWhenGranted() {
+        run(power = battery) // nothing uploaded: all three pending
+        val books = booksFolder()
+        userFile(books, "a.epub", "aaaa")
+        val sub = drive.putFolder(books, "sub")
+        userFile(sub, "b.pdf", "bbbbbb")
+        userFile(books, "not-on-the-reader.epub", "x")
+        now += 60_000
+
+        val s = grantedRun(inbox = null, power = battery)
+
+        assertEquals(3, s.booksLocal)
+        assertEquals(2, s.booksOnDrive)
+        assertEquals(1, s.booksPending)
+        assertFalse(s.booksCaughtUpOnce)
+
+        userFile(drive.putFolder(sub, "deep"), "c.fb2", "cc")
+        now += 60_000
+        val t = grantedRun(inbox = null, power = battery)
+        assertEquals(3, t.booksOnDrive)
+        assertEquals(0, t.booksPending)
+        assertTrue(t.booksCaughtUpOnce)
+        assertTrue(drive.nodes.values.none { it.props["kind"] == "book" })
+
+        // Without the grant the user files are invisible: the books go up as before the inbox.
+        drive.uploads.clear()
+        now += 60_000
+        run(power = battery)
+        assertTrue(drive.uploads.containsAll(listOf("a.epub", "b.pdf", "c.fb2")))
+    }
+
+    @Test fun downloadBookFallsBackToPathWhenGranted() {
+        run()
+        userFile(drive.putFolder(booksFolder(), "Серия"), "Том 1.epub", "из инбокса")
+        val r = runner(readonly = true)
+
+        val to = File(tmp.root, "t1.epub")
+        r.downloadBook(BookEntry("Серия/Том 1.epub", "из инбокса".toByteArray().size.toLong(), 1L), to)
+        assertEquals("из инбокса", to.readText())
+
+        // App copies are still found first.
+        val b = File(tmp.root, "b.pdf")
+        r.downloadBook(BookEntry("sub/b.pdf", 6, 1_700_000_000_000L), b)
+        assertEquals("bbbbbb", b.readText())
+
+        // Not on Drive at all: the plain not-found error, not the hint.
+        val e = assertThrows(FileNotFoundException::class.java) { r.downloadBook(BookEntry("nope.epub", 1, 1), File(tmp.root, "nope")) }
+        assertNotEquals(RESTORE_HINT_INBOX, e.message)
+        assertFalse(File(tmp.root, "nope").exists())
+    }
+
+    @Test fun withoutGrantRestoreReportsHint() {
+        run()
+        userFile(booksFolder(), "inbox.epub", "i")
+
+        val e = assertThrows(IOException::class.java) { runner().downloadBook(BookEntry("inbox.epub", 1, 1), File(tmp.root, "i")) }
+
+        assertEquals("включите \"Забирать новые книги\" и повторите", e.message)
+        assertEquals("включите \"Забирать новые книги\" и повторите", backupErrorText(e))
+        assertEquals(0, drive.treeCalls)
+    }
+
+    @Test fun checkboxOffBackupUnchanged() {
+        run()
+        userFile(booksFolder(), "dropped.epub", "d")
+        book("dropped.epub", "d")
+        drive.uploads.clear()
+        drive.downloads.clear()
+        now = at(day0.plusDays(1))
+
+        val s = run()
+
+        assertEquals(0, drive.treeCalls)
+        assertTrue(drive.downloads.isEmpty())
+        // drive.file never sees the owner's file: the book goes up as it always did.
+        assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk", "dropped.epub"), drive.uploads)
+        assertEquals(0, s.booksPending)
+        assertNull(s.inboxLastCheckAt)
+        assertEquals(now, s.lastSuccessAt)
+    }
+
+    @Test fun backupUsesTheProvenRootBesideTheOwnersSameNamedFolder() {
+        val mine = drive.putFolder(null, "Nekoshelf") // the owner's own, first in Drive's answer
+        val app = drive.putFolder(null, "Nekoshelf")
+        drive.put(drive.folder("koreader", app), "koreader-2026-10-20.zip", "z".toByteArray(), mapOf("kind" to "koreader"))
+
+        val s = grantedRun(inbox = null)
+
+        assertEquals(now, s.lastSuccessAt)
+        assertTrue(drive.nodes.values.none { it.parent == mine })
+        val zip = drive.nodes.values.single { it.name == "koreader-2026-10-23.zip" }
+        assertEquals(app, drive.nodes[zip.parent]!!.parent)
+        assertEquals(3, drive.filesIn("Nekoshelf/books").size)
+    }
+
+    @Test fun ambiguousRootsFailTheBackupVisibly() {
+        drive.putFolder(null, "Nekoshelf")
+        drive.putFolder(null, "Nekoshelf")
+
+        val s = run()
+
+        assertEquals(INBOX_ERROR_MANY_ROOTS, s.lastError)
+        assertNull(s.lastSuccessAt)
+        assertTrue(drive.uploads.isEmpty())
     }
 }

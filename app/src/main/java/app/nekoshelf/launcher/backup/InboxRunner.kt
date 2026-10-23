@@ -9,6 +9,7 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,12 +21,7 @@ const val INBOX_ERROR_NO_ACCESS = "нет доступа к Диску — вк�
 const val INBOX_ERROR_LOW_SPACE = "мало места"
 private const val INBOX_ERROR_OTHER = "не удалось получить книгу с Диска"
 const val INBOX_ERROR_NO_ROOT = "на Диске нет папки Nekoshelf"
-const val INBOX_ERROR_MANY_ROOTS = "на Диске несколько папок Nekoshelf"
 const val INBOX_ERROR_MANY_BOOKS = "в папке Nekoshelf несколько папок books"
-
-/** App-created file in the `Nekoshelf` root: `{"ids":[…],"updated":<ms>}`, the seen set that survives a reader wipe. */
-internal const val INBOX_SEEN_FILE = "inbox-seen.json"
-private const val KIND_INBOX_SEEN = "inbox-seen"
 
 /** A download is skipped (and retried later) when it would leave less free space than this. */
 internal const val INBOX_MIN_FREE_BYTES = 200L * 1024 * 1024
@@ -35,12 +31,7 @@ private const val PART_PREFIX = ".inbox-"
 private const val PART_SUFFIX = ".part"
 private const val STALE_PART_MS = 24L * 60 * 60 * 1000
 
-/** The backup's snapshot folder and file kind (see [BackupRunner]): proof that a `Nekoshelf` folder is the backup's. */
-private const val KOREADER_FOLDER = "koreader"
-private const val KIND_KOREADER = "koreader"
-
-private const val GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
-private const val FOLDER_MIME = "application/vnd.google-apps.folder"
+internal const val GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
 
 /**
  * The files of a `Nekoshelf/books` [tree] the inbox should download: not Google-native (Docs,
@@ -155,29 +146,11 @@ class InboxRunner(
             if (seen != onDrive || corrupt || replaceable.size > 1) writeSeen(root.id, replaceable)
         }
 
-        /**
-         * The backup's `Nekoshelf` folder in My Drive. With the readonly grant the owner's own
-         * folders of that name are visible too: a lone folder is taken as is; among several, the one
-         * holding the backup's KOReader snapshots or an app-made seen file.
-         */
-        private fun backupRoot(): RemoteFile? {
-            val folders = drive.findChildren("root", DRIVE_ROOT).filter { it.isFolder() }
-            if (folders.isEmpty()) {
-                if (hadBackup) throw InboxFailure(INBOX_ERROR_NO_ROOT)
-                return null
-            }
-            if (folders.size == 1) return folders[0]
-            return folders.filter { isBackupRoot(it.id) }.singleOrNull() ?: throw InboxFailure(INBOX_ERROR_MANY_ROOTS)
-        }
+        /** The backup's `Nekoshelf` folder ([DriveRoots.resolve]); none is an error once a backup has succeeded. */
+        private fun backupRoot(): RemoteFile? =
+            DriveRoots.resolve(drive) ?: if (hadBackup) throw InboxFailure(INBOX_ERROR_NO_ROOT) else null
 
-        private fun isBackupRoot(id: String): Boolean =
-            seenCopies(id).isNotEmpty() ||
-                drive.findChildren(id, KOREADER_FOLDER).filter { it.isFolder() }
-                    .any { k -> drive.list(k.id).any { it.props[PROP_KIND] == KIND_KOREADER } }
-
-        /** App-made seen files only: a file the owner happened to name so is neither trusted nor deleted. */
-        private fun seenCopies(rootId: String): List<RemoteFile> =
-            drive.findChildren(rootId, INBOX_SEEN_FILE).filter { !it.isFolder() && it.props[PROP_KIND] == KIND_INBOX_SEEN }
+        private fun seenCopies(rootId: String): List<RemoteFile> = DriveRoots.seenCopies(drive, rootId)
 
         /** Leftovers of runs killed mid-download; today's are left alone. */
         private fun sweepStaleParts(dirs: Set<File>) {
@@ -239,7 +212,11 @@ class InboxRunner(
             if (seen.add(id)) store.saveInboxSeen(seen)
         }
 
-        /** Any failure other than corrupt content or a 404 propagates: the run must stop. */
+        /**
+         * Any failure other than corrupt content or a 404 propagates: the run must stop. Content
+         * that does not parse counts as corrupt only when all of the file arrived (a cut-off
+         * transfer is a failure, not a reason to overwrite the record).
+         */
         private fun readSeen(f: RemoteFile): SeenCopy {
             val tmp = File.createTempFile("inbox-seen", ".json")
             try {
@@ -249,12 +226,16 @@ class InboxRunner(
                     if (e.code == 404) return SeenCopy.Gone
                     throw e
                 }
-                return try {
-                    val ids = JSONObject(tmp.readText()).optJSONArray("ids") ?: return SeenCopy.Corrupt
-                    SeenCopy.Ids((0 until ids.length()).mapNotNull { ids.optString(it).ifEmpty { null } }.toSet())
+                val ids = try {
+                    JSONObject(tmp.readText()).optJSONArray("ids")
                 } catch (e: JSONException) {
-                    SeenCopy.Corrupt
+                    null
                 }
+                if (ids == null) {
+                    if (tmp.length() != f.size) throw IOException("seen file cut off: ${tmp.length()} of ${f.size} bytes")
+                    return SeenCopy.Corrupt
+                }
+                return SeenCopy.Ids((0 until ids.length()).mapNotNull { ids.optString(it).ifEmpty { null } }.toSet())
             } finally {
                 tmp.delete()
             }
@@ -275,8 +256,6 @@ class InboxRunner(
         }
     }
 
-    private fun RemoteFile.isFolder() = mimeType == FOLDER_MIME
-
     private sealed interface SeenCopy {
         data class Ids(val ids: Set<String>) : SeenCopy
         data object Corrupt : SeenCopy
@@ -291,6 +270,15 @@ class InboxRunner(
 
 /** A check that cannot go on, with its own status text. */
 private class InboxFailure(val text: String) : Exception(text)
+
+/**
+ * Records an inbox check that could not run at all (e.g. no readonly token for this run) as the
+ * inbox's error; the backup's own fields are untouched. The text comes from [inboxErrorText], so
+ * the failure is classified by its exception class (a [DriveAuthException] is lost access).
+ */
+internal fun recordInboxFailure(store: BackupStore, e: Exception) {
+    store.update { it.copy(inboxError = inboxErrorText(e)) }
+}
 
 /**
  * Lost readonly access (token rejected, or a 403 from a listing) asks the owner to turn the
