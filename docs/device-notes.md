@@ -42,8 +42,28 @@ the owner's device on 2026-10-23.
 ## E-ink full refresh
 
 - `context.getSystemService("eink")` returns `android.os.EinkManager`; reflective
-  `sendOneFullFrame()` performs one full refresh. Logcat shows
+  `sendOneFullFrame()` marks the NEXT posted frame as a full (GC16) refresh — it does not
+  flash what is already on screen. `Eink.fullRefresh(activity)` therefore invalidates the
+  decor view right after the call so a frame is posted (verified: `dumpsys gfxinfo` frame
+  count +1 per refresh tap, +0 for a tap on an inert area). Logcat shows
   `D EinkManager: sendOneFullFrame` when it runs.
+
+## Hardware page keys
+
+- The page-turn buttons send scan codes 603/604, mapped in `/system/usr/keylayout/Generic.kl`
+  to firmware labels `HAOQING_PAGE_UP` / `HAOQING_PAGE_DOWN` (key codes 291 / 292 on this
+  build). The launcher resolves them with `KeyEvent.keyCodeFromString(...)` at runtime.
+  Test with `adb shell input keyevent 292`.
+
+## Opening books in KOReader
+
+- KOReader accepts `ACTION_VIEW` with a `file://` URI (`UriHandler: Found local file`).
+  At targetSdk ≥ 24 StrictMode would throw `FileUriExposedException`, so `Launch.openBook`
+  lifts the VM policy for that one `startActivity`.
+- With the Bookshelf plugin's "hot parking" (reader parked under the shelf), an external
+  open closes the parked ReaderUI first (`ReaderUI instance mismatch!`), and the plugin's
+  close hook re-shows the shelf over the newly opened book. Seen once on 2026-10-23; the
+  next open showed the book at its saved position.
 
 ## Screenshots
 
