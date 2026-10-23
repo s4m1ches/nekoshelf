@@ -22,6 +22,10 @@ class GoogleAuth(private val context: Context) {
         .setRequestedScopes(listOf(Scope(DRIVE_FILE)))
         .build()
 
+    private val readonlyRequest: AuthorizationRequest = AuthorizationRequest.builder()
+        .setRequestedScopes(listOf(Scope(DRIVE_FILE), Scope(READONLY_SCOPE)))
+        .build()
+
     @Volatile private var last: AuthorizationResult? = null
 
     /**
@@ -31,9 +35,9 @@ class GoogleAuth(private val context: Context) {
      * a result without a token — throws [TokenUnavailableException], which the backup treats as
      * «нет сети» and retries at the next wake. **Blocking**: call it only off the main thread.
      */
-    fun silentToken(): String? {
+    fun silentToken(withReadonly: Boolean = false): String? {
         val result = try {
-            Tasks.await(Identity.getAuthorizationClient(context).authorize(request), 20, TimeUnit.SECONDS)
+            Tasks.await(Identity.getAuthorizationClient(context).authorize(if (withReadonly) readonlyRequest else request), 20, TimeUnit.SECONDS)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             throw TokenUnavailableException("interrupted while waiting for Google Play services", e)
@@ -60,6 +64,44 @@ class GoogleAuth(private val context: Context) {
         null
     }
 
+    /**
+     * Best effort, no UI, **blocking** (off the main thread). True when a silent authorization asking
+     * for drive.file + drive.readonly returns a token without needing consent, or when the last
+     * authorization result (from [silentToken] or [tokenFromResult]) already granted the readonly
+     * scope. Any failure counts as «not granted».
+     */
+    fun hasReadonly(): Boolean {
+        if (last?.grantedScopes?.contains(READONLY_SCOPE) == true) return true
+        return try {
+            val r = Tasks.await(Identity.getAuthorizationClient(context).authorize(readonlyRequest), 20, TimeUnit.SECONDS)
+            if (r.hasResolution() || r.accessToken == null) {
+                false
+            } else {
+                last = r
+                r.grantedScopes.contains(READONLY_SCOPE)
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * The consent UI that adds drive.readonly (requested together with drive.file), or null when no UI
+     * is needed (already granted) or Play services fail. **Blocking**: call it off the main thread.
+     */
+    fun readonlyIntent(activity: Activity): PendingIntent? = try {
+        val result = Tasks.await(Identity.getAuthorizationClient(activity).authorize(readonlyRequest), 20, TimeUnit.SECONDS)
+        if (result.hasResolution()) result.pendingIntent else null
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        null
+    } catch (e: Exception) {
+        null
+    }
+
     /** Extracts the access token from the result Intent returned by the UI started with [signInIntent]. */
     fun tokenFromResult(data: Intent): String? = try {
         val result = Identity.getAuthorizationClient(context).getAuthorizationResultFromIntent(data)
@@ -76,7 +118,8 @@ class GoogleAuth(private val context: Context) {
         null
     }
 
-    private companion object {
-        const val DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
+    companion object {
+        const val READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+        private const val DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
     }
 }

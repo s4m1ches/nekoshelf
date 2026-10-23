@@ -3,7 +3,19 @@ package app.nekoshelf.launcher.backup.drive
 import java.io.File
 import java.io.IOException
 
-data class RemoteFile(val id: String, val name: String, val size: Long, val props: Map<String, String>)
+data class RemoteFile(
+    val id: String,
+    val name: String,
+    val size: Long,
+    val props: Map<String, String>,
+    val mimeType: String = "",
+    /** Last modification, epoch milliseconds; 0 when unknown. */
+    val modifiedTime: Long = 0L,
+    val parents: List<String> = emptyList(),
+)
+
+/** A non-folder file found by [Drive.listTree]; [relativePath] is `/`-separated, folder names below the root plus the file name. */
+data class TreeFile(val file: RemoteFile, val relativePath: String)
 
 /** Persists a resumable-upload session (URL + committed offset) so an interrupted upload can continue. */
 interface ResumeStore {
@@ -30,6 +42,12 @@ interface Drive {
     fun folder(name: String, parent: String?): String
     fun list(parent: String): List<RemoteFile>
     fun listByProp(key: String, value: String): List<RemoteFile>
+
+    /** Every non-trashed, non-folder descendant of [rootId], walked breadth-first. */
+    fun listTree(rootId: String): List<TreeFile>
+
+    /** A non-trashed child of [parent] named [name], whoever created it; null when absent. */
+    fun findChild(parent: String, name: String): RemoteFile?
 
     /**
      * Uploads [file] as [name] under [parent]. Files over 5 MB use a resumable session whose URL and

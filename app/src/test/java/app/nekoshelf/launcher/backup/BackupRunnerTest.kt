@@ -5,6 +5,7 @@ import app.nekoshelf.launcher.backup.drive.Drive
 import app.nekoshelf.launcher.backup.drive.DriveAuthException
 import app.nekoshelf.launcher.backup.drive.DriveException
 import app.nekoshelf.launcher.backup.drive.RemoteFile
+import app.nekoshelf.launcher.backup.drive.TreeFile
 import app.nekoshelf.launcher.backup.drive.ResumeStore
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -92,6 +93,23 @@ class FakeDrive : Drive {
     override fun listByProp(key: String, value: String): List<RemoteFile> {
         call()
         return nodes.values.filter { !it.folder && it.props[key] == value }.map { it.remote() }
+    }
+
+    override fun listTree(rootId: String): List<TreeFile> {
+        call()
+        val out = ArrayList<TreeFile>()
+        fun walk(id: String, prefix: String) {
+            for (n in nodes.values.filter { it.parent == id }) {
+                if (n.folder) walk(n.id, prefix + n.name + "/") else out += TreeFile(n.remote(), prefix + n.name)
+            }
+        }
+        walk(rootId, "")
+        return out
+    }
+
+    override fun findChild(parent: String, name: String): RemoteFile? {
+        call()
+        return nodes.values.firstOrNull { it.parent == parent && it.name == name }?.remote()
     }
 
     override fun upload(parent: String, name: String, file: File, props: Map<String, String>, resume: ResumeStore?): RemoteFile {
