@@ -302,4 +302,58 @@ class DriveRestTest {
         override fun put(key: String, url: String, offset: Long) { m[key] = url to offset }
         override fun clear(key: String) { m.remove(key) }
     }
+
+    @Test fun listTreeWalksNestedFoldersWithCyrillicNames() {
+        val folder = "application/vnd.google-apps.folder"
+        server.enqueue(json("""{"files":[{"id":"S1","name":"Серия А","mimeType":"$folder","parents":["R"]}]}"""))
+        server.enqueue(json("""{"files":[{"id":"B1","name":"Том 1.epub","size":"42","mimeType":"application/epub+zip","modifiedTime":"2024-05-06T07:08:09.000Z","parents":["S1"]}]}"""))
+        val tree = drive.listTree("R")
+        assertEquals(1, tree.size)
+        val t = tree[0]
+        assertEquals("Серия А/Том 1.epub", t.relativePath)
+        assertEquals("B1", t.file.id)
+        assertEquals(42L, t.file.size)
+        assertEquals("application/epub+zip", t.file.mimeType)
+        assertEquals(1714979289000L, t.file.modifiedTime)
+        assertEquals(listOf("S1"), t.file.parents)
+        assertTrue(decodedQuery(server.takeRequest().path!!).contains("q='R' in parents and trashed = false"))
+        val second = server.takeRequest()
+        assertTrue(decodedQuery(second.path!!).contains("q='S1' in parents and trashed = false"))
+        assertTrue(decodedQuery(second.path!!).contains("modifiedTime"))
+    }
+
+    @Test fun listTreeSkipsTrashedAndPages() {
+        server.enqueue(json("""{"nextPageToken":"T2","files":[{"id":"a","name":"a.epub","size":"1"},{"id":"t","name":"gone.epub","trashed":true}]}"""))
+        server.enqueue(json("""{"files":[{"id":"b","name":"b.fb2","size":"2"}]}"""))
+        val tree = drive.listTree("R")
+        assertEquals(listOf("a.epub", "b.fb2"), tree.map { it.relativePath })
+        server.takeRequest()
+        assertTrue(decodedQuery(server.takeRequest().path!!).contains("pageToken=T2"))
+    }
+
+    @Test fun findChildrenEscapesQuotes() {
+        server.enqueue(json("""{"files":[{"id":"C1","name":"It's"}]}"""))
+        assertEquals("C1", drive.findChildren("P'1", "It's").single().id)
+        val q = decodedQuery(server.takeRequest().path!!)
+        assertTrue(q, q.contains("name = 'It\\'s' and 'P\\'1' in parents and trashed = false"))
+        server.enqueue(json("""{"files":[]}"""))
+        assertTrue(drive.findChildren("P", "x").isEmpty())
+    }
+
+    @Test fun findChildrenReturnsEverySameNamedChildWithItsMimeType() {
+        server.enqueue(json("""{"files":[
+            {"id":"A","name":"Nekoshelf","mimeType":"application/vnd.google-apps.folder"},
+            {"id":"B","name":"Nekoshelf","mimeType":"text/plain","appProperties":{"kind":"x"}}],"nextPageToken":"T2"}"""))
+        server.enqueue(json("""{"files":[{"id":"C","name":"Nekoshelf","mimeType":"application/vnd.google-apps.folder"}]}"""))
+
+        val r = drive.findChildren("root", "Nekoshelf")
+
+        assertEquals(listOf("A", "B", "C"), r.map { it.id })
+        assertEquals("application/vnd.google-apps.folder", r[0].mimeType)
+        assertEquals(mapOf("kind" to "x"), r[1].props)
+        val q = decodedQuery(server.takeRequest().path!!)
+        assertTrue(q, q.contains("name = 'Nekoshelf' and 'root' in parents and trashed = false"))
+        assertTrue(q, q.contains("mimeType"))
+        assertTrue(decodedQuery(server.takeRequest().path!!).contains("pageToken=T2"))
+    }
 }

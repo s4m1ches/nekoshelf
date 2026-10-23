@@ -37,6 +37,29 @@ import javax.net.ssl.SSLException
  *
  * [mangaAvailable] says whether «Манга» is installed with the bridge permission granted: only then
  * is its backup asked for, and only its absence counts as "skipped".
+ *
+ * [readonly]: the Drive token carries `drive.readonly` (the inbox checkbox is on and granted), so
+ * the owner's own files under `Nekoshelf/books` are visible: a local book with *any* file at its
+ * path there counts as on Drive and is never uploaded (no duplicate of a book the owner dropped
+ * in), and [downloadBook] can fetch such a file. Without it nothing is listed beyond the app's own
+ * files, exactly as before the inbox. [inbox] (null when the checkbox is off or not granted) runs
+ * first in every run, on an [unmetered] network only; whatever it does, the backup goes on and
+ * succeeds or fails as it would without it (the inbox keeps its own status fields). Should
+ * [readonlyLost] say the readonly token gave out during the run, that is the inbox's error only.
+ *
+ * Ruling I9: a local book at a path the inbox received (or found already on the reader) counts as
+ * on Drive too, with or without the readonly view, the checkbox on or off: the local record
+ * ([BackupStore.inboxReceivedPaths]) and, when some book is not on Drive otherwise, the `paths` of
+ * the app-made `inbox-seen.json` (which `drive.file` sees; a fresh reader has no local record).
+ *
+ * Ruling I10: [drive] (readonly-capable when granted) only finds the root ([DriveRoots.resolve]),
+ * lists `Nekoshelf/books` for the owner's files and serves restores; every folder lookup and
+ * creation, upload, delete and the app's own index go through [appDrive] (the base `drive.file`
+ * token), so the backup only ever writes into folders the app made — never into a same-named
+ * folder the owner made, which a `drive.file` app may not be allowed to write into.
+ *
+ * The `Nekoshelf` root is the one [DriveRoots.resolve] finds (the inbox uses the same), created
+ * only when there is none.
  */
 class BackupRunner(
     private val drive: Drive,
@@ -48,6 +71,11 @@ class BackupRunner(
     private val cacheDir: File,
     private val clock: () -> Long,
     private val zone: ZoneId,
+    private val inbox: InboxRunner? = null,
+    private val unmetered: () -> Boolean = { false },
+    private val readonly: Boolean = inbox != null,
+    private val readonlyLost: () -> Exception? = { null },
+    private val appDrive: Drive = drive,
 ) {
     /**
      * KOReader snapshot → «Манга» (skipped only when unavailable) → retention → books (if
@@ -72,8 +100,10 @@ class BackupRunner(
     }
 
     private fun runLocked(power: Power, manual: Boolean, powerNow: () -> Power): BackupStatus {
-        val start = store.load()
         // The hold (R28), auto and manual alike: the owner's restore answer comes first.
+        store.load().let { if (it.restoreOfferPending) return it }
+        runInbox()
+        val start = store.load()
         if (start.restoreOfferPending) return start
         val now = clock()
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
@@ -114,6 +144,20 @@ class BackupRunner(
         return result
     }
 
+    /**
+     * The inbox step: first, so the books it brings are in this run's snapshot and seen on Drive.
+     * A check already running elsewhere (the wake's inbox work) makes it return at once; the backup
+     * goes on, and its readonly view keeps it from uploading what that check brings.
+     */
+    private fun runInbox() {
+        val step = inbox ?: return
+        try {
+            if (unmetered()) step.run()
+        } catch (e: Exception) {
+            // Never the backup's failure; InboxRunner records its own errors.
+        }
+    }
+
     /** A fresh folder of this run under `backup-work/`; leftovers older than a day are removed. */
     private fun newWorkDir(): File {
         val base = File(cacheDir, WORK_DIR)
@@ -152,7 +196,7 @@ class BackupRunner(
             } catch (e: Exception) {
                 throw StepFailure(SNAPSHOT_FAILED, e)
             }
-            val root = folder(ROOT, null)
+            val root = DriveRoots.resolve(drive)?.id ?: appDrive.folder(ROOT, null)
             replaceSnapshot(folder(KIND_KOREADER, root), zip, KIND_KOREADER)
             zip.delete()
 
@@ -220,14 +264,14 @@ class BackupRunner(
 
         /** Uploads today's snapshot, then deletes the older file(s) of the same name (same-day rerun). */
         private fun replaceSnapshot(parent: String, file: File, kind: String) {
-            val old = drive.listByProp(PROP_KIND, kind).filter { it.name == file.name }
+            val old = appDrive.listByProp(PROP_KIND, kind).filter { it.name == file.name }
             val up = upload(parent, file.name, file, mapOf(PROP_KIND to kind))
             old.filter { it.id != up.id }.forEach { deleteRemote(it.id) }
         }
 
         /** Deletes all but the newest [KEEP] snapshots of [kind] (never one uploaded now); returns how many remain. */
         private fun retain(kind: String, pattern: Regex): Int {
-            val files = drive.listByProp(PROP_KIND, kind).filter { pattern.matches(it.name) }
+            val files = appDrive.listByProp(PROP_KIND, kind).filter { pattern.matches(it.name) }
             val drop = snapshotsToDelete(files.map { it.name }, KEEP).toSet()
             // A clock that went backwards makes today's file look old: it stays anyway.
             val gone = files.filter { it.name in drop && it.id !in fresh }
@@ -253,16 +297,22 @@ class BackupRunner(
                 if (firstError == null) firstError = e
             }
             val index = HashMap<String, List<RemoteFile>>()
-            for (f in drive.listByProp(PROP_KIND, KIND_BOOK)) {
+            for (f in appDrive.listByProp(PROP_KIND, KIND_BOOK)) {
                 val path = bookPathOf(f.props) ?: continue
                 index[path] = index[path].orEmpty() + f
             }
+            // Local books with an owner's file at their path (only visible with readonly).
+            val userPaths = if (readonly) userBookPaths(root) else emptySet()
+            readonlyLost()?.let { recordInboxFailure(store, it) }
+            // Ruling I9: what the inbox put on the reader is on Drive already.
+            val received = store.inboxReceivedPaths(start.account).keys
+            val userPresent = HashSet<String>()
             val pending = ArrayList<BookEntry>()
             for (b in manifest) {
                 val copies = index[b.path].orEmpty()
                 val keep = copies.firstOrNull { it.isCopyOf(b) }
                 if (keep == null) {
-                    pending += b
+                    if (b.path in userPaths || b.path in received) userPresent += b.path else pending += b
                 } else if (copies.size > 1) {
                     // Older versions or duplicates of a book whose current copy is on Drive.
                     try {
@@ -273,8 +323,14 @@ class BackupRunner(
                     }
                 }
             }
+            if (pending.isNotEmpty()) {
+                // Received on this account before the local record was there (a fresh reader).
+                val more = receivedOnDrive(root)
+                pending.removeAll { b -> (b.path in more).also { if (it) userPresent += b.path } }
+            }
+            fun onDrive() = if (userPresent.isEmpty()) index.size else (index.keys + userPresent).size
             counts.local = manifest.size
-            counts.onDrive = index.size
+            counts.onDrive = onDrive()
             counts.pending = pending.size
             if (!upload) {
                 counts.booksDone = true
@@ -293,7 +349,7 @@ class BackupRunner(
                     // Same book, new version (size/mtime changed): the old copy goes once the new one is up.
                     index[b.path].orEmpty().filter { it.id != up.id }.forEach { deleteRemote(it.id) }
                     index[b.path] = listOf(up)
-                    counts.onDrive = index.size
+                    counts.onDrive = onDrive()
                     counts.pending = --left
                 } catch (e: Exception) {
                     bookFailed(e)
@@ -303,8 +359,35 @@ class BackupRunner(
             return firstError
         }
 
+        /**
+         * The `paths` of the app-made `inbox-seen.json` copies (merged into the local record). A copy
+         * that vanished or does not parse adds nothing; any other failure fails the run (visibly,
+         * retried at the next wake) rather than upload what may be duplicates.
+         */
+        private fun receivedOnDrive(root: String): Set<String> {
+            val found = HashMap<String, Long>()
+            for (f in DriveRoots.seenCopies(appDrive, root)) {
+                (readSeenCopy(appDrive, f) as? SeenCopy.Read)?.let { found += it.paths }
+            }
+            if (found.isEmpty()) return emptySet()
+            store.addInboxReceivedPaths(start.account, found)
+            return found.keys
+        }
+
+        /**
+         * Relative paths of the owner's files under `Nekoshelf/books` (all folders of that name;
+         * creates none). The backup's own copies (`kind=book`) are left out: they count only when
+         * they match the book (size + mtime), so a changed book still replaces its old copy.
+         * Google-native entries (Docs, shortcuts) are not copies of a book and do not count.
+         */
+        private fun userBookPaths(root: String): Set<String> =
+            drive.findChildren(root, BOOKS).filter { it.isFolder() }
+                .flatMap { drive.listTree(it.id) }
+                .filter { it.file.props[PROP_KIND] != KIND_BOOK && !it.file.mimeType.startsWith(GOOGLE_NATIVE_PREFIX) }
+                .mapTo(HashSet()) { it.relativePath }
+
         private fun upload(parent: String, name: String, file: File, props: Map<String, String>): RemoteFile =
-            drive.upload(parent, name, file, props, store).also { fresh += it.id }
+            appDrive.upload(parent, name, file, props, store).also { fresh += it.id }
 
         private fun bookFolder(root: String, path: String): String {
             var id = folder(BOOKS, root)
@@ -313,13 +396,13 @@ class BackupRunner(
         }
 
         private fun folder(name: String, parent: String?): String =
-            folders.getOrPut("$parent/$name") { drive.folder(name, parent) }
+            folders.getOrPut("$parent/$name") { appDrive.folder(name, parent) }
     }
 
     /** A 404 means someone (an earlier run, the owner) already deleted it. */
     private fun deleteRemote(id: String) {
         try {
-            drive.delete(id)
+            appDrive.delete(id)
         } catch (e: DriveException) {
             if (e.code != 404) throw e
         }
@@ -354,15 +437,55 @@ class BackupRunner(
     /** Downloads the newest «Манга» backup into [to]; false when there is none. */
     fun latestMangaBackup(to: File): Boolean = downloadNewest(KIND_MANGA, MANGA_NAME, to)
 
-    /** Downloads the Drive copy of [entry] (by its relative path) into [to]. Throws if Drive has none. */
-    fun downloadBook(entry: BookEntry, to: File) {
+    /**
+     * Downloads the Drive copy of [entry] (by its relative path) into [to]: the backup's own copy;
+     * failing that, with [readonly], any file at that path under `Nekoshelf/books` (e.g. one the
+     * inbox brought). Throws [FileNotFoundException] if Drive has none; [BookNeedsInboxException]
+     * when, without readonly, the owner's files cannot even be looked at and the inbox may have
+     * brought it ([inboxHistory], see [hasInboxHistory]) — otherwise the plain not-found.
+     */
+    fun downloadBook(entry: BookEntry, to: File, inboxHistory: Boolean = false) {
         fun ofPath(files: List<RemoteFile>) =
             files.filter { it.props[PROP_KIND] == KIND_BOOK && bookPathOf(it.props) == entry.path }
         val copies = ofPath(drive.listByProp(PROP_PID, pathId(entry.path)))
             .ifEmpty { ofPath(drive.listByProp(PROP_KIND, KIND_BOOK)) }
         val f = copies.firstOrNull { it.isCopyOf(entry) } ?: copies.firstOrNull()
-            ?: throw FileNotFoundException("book not on Google Drive")
+            ?: when {
+                readonly -> atPath(entry)
+                inboxHistory -> throw BookNeedsInboxException()
+                else -> throw FileNotFoundException("book not on Google Drive")
+            }
         drive.download(f.id, to)
+    }
+
+    /**
+     * Whether the inbox was ever used here or on this account (so a book missing from the app's
+     * copies may be an owner's file the readonly grant would reach): the checkbox is on, the
+     * reader keeps a seen set, or an app-made `inbox-seen.json` is in the `Nekoshelf` root.
+     */
+    fun hasInboxHistory(): Boolean {
+        if (store.load().inboxEnabled || store.inboxSeen().isNotEmpty()) return true
+        val root = DriveRoots.resolve(drive) ?: return false
+        return DriveRoots.seenCopies(drive, root.id).isNotEmpty()
+    }
+
+    /** The `Nekoshelf/books` folders for path lookups, found once per runner (a restore asks per book). */
+    @Volatile private var booksDirs: List<RemoteFile>? = null
+
+    private fun booksDirsForLookup(): List<RemoteFile> = booksDirs ?: run {
+        val root = DriveRoots.resolve(drive) ?: return emptyList()
+        drive.findChildren(root.id, BOOKS).filter { it.isFolder() }.also { booksDirs = it }
+    }
+
+    /** Any non-folder, non-Google-native file at [entry]'s path under `Nekoshelf/books`, one of the same size first. */
+    private fun atPath(entry: BookEntry): RemoteFile {
+        val segments = entry.path.split('/')
+        var dirs = booksDirsForLookup()
+        for (seg in segments.dropLast(1)) dirs = dirs.flatMap { d -> drive.findChildren(d.id, seg).filter { it.isFolder() } }
+        val files = dirs.flatMap { d -> drive.findChildren(d.id, segments.last()) }
+            .filter { !it.isFolder() && !it.mimeType.startsWith(GOOGLE_NATIVE_PREFIX) }
+        return files.firstOrNull { it.size == entry.size } ?: files.firstOrNull()
+            ?: throw FileNotFoundException("book not on Google Drive")
     }
 
     private fun downloadNewest(kind: String, pattern: Regex, to: File): Boolean {
@@ -383,8 +506,8 @@ class BackupRunner(
         val RUNNING = AtomicBoolean(false)
         const val WORK_DIR = "backup-work"
         const val STALE_WORK_MS = 24L * 60 * 60 * 1000
-        const val ROOT = "Nekoshelf"
-        const val BOOKS = "books"
+        const val ROOT = DRIVE_ROOT
+        const val BOOKS = DRIVE_BOOKS
         const val KEEP = 14
         const val KIND_KOREADER = "koreader"
         const val KIND_MANGA = "manga"
@@ -396,12 +519,16 @@ class BackupRunner(
 
 // ---- book appProperties ------------------------------------------------------------------------
 
-private const val PROP_KIND = "kind"
+/** The app's folder in My Drive and the books mirror inside it (the inbox reads it too). */
+internal const val DRIVE_ROOT = "Nekoshelf"
+internal const val DRIVE_BOOKS = "books"
+
+internal const val PROP_KIND = "kind"
 private const val PROP_PID = "pid"
 private const val PROP_SIZE = "size"
 private const val PROP_MTIME = "mtime"
 private const val PROP_PATH_CHUNK = "p"
-private const val KIND_BOOK = "book"
+internal const val KIND_BOOK = "book"
 
 /** Drive's limit per appProperty: key + value, in UTF-8 bytes. */
 internal const val DRIVE_PROP_MAX_BYTES = 124
@@ -470,6 +597,9 @@ private fun utf8Length(cp: Int) = when {
 
 // ---- errors ------------------------------------------------------------------------------------
 
+/** A book only the owner's own files on Drive may hold, and the readonly grant to look is missing. */
+class BookNeedsInboxException : FileNotFoundException(RESTORE_HINT_INBOX)
+
 /** A step failed in a way that has its own text; [cause] is kept for logs only. */
 private class StepFailure(val text: String, cause: Throwable) : Exception(text, cause)
 
@@ -477,6 +607,7 @@ internal const val SNAPSHOT_FAILED = "не удалось собрать бэк�
 internal const val MANGA_FAILED = "Манга не ответила"
 const val BACKUP_ERROR_AUTH = "Google отозвал доступ — войдите заново"
 const val BACKUP_ERROR_NO_NETWORK = "нет сети"
+const val RESTORE_HINT_INBOX = "включите \"Забирать новые книги\" и повторите"
 private const val BACKUP_ERROR_OTHER = "не удалось сделать бэкап"
 
 /**
@@ -499,6 +630,8 @@ private fun isGzip(f: File): Boolean = f.inputStream().use { it.read() == 0x1f &
  */
 fun backupErrorText(e: Throwable, fallback: String = BACKUP_ERROR_OTHER): String = when {
     e is StepFailure -> e.text
+    e is AmbiguousRootException -> INBOX_ERROR_MANY_ROOTS
+    e is BookNeedsInboxException -> RESTORE_HINT_INBOX
     e is DriveAuthException -> BACKUP_ERROR_AUTH
     e is DriveException -> "ошибка Google Диска (код ${e.code})"
     isNetworkClass(e) -> BACKUP_ERROR_NO_NETWORK

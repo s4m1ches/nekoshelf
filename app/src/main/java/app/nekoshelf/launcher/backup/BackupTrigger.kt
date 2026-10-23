@@ -22,6 +22,13 @@ import java.util.concurrent.Executors
  */
 object BackupTrigger {
     const val WORK_NAME = "backup"
+    const val INBOX_WORK_NAME = "inbox"
+
+    /** The manual check is its own work, so it never waits behind a wake check that needs an unmetered network. */
+    const val INBOX_MANUAL_WORK_NAME = "inbox-manual"
+
+    /** The wake enqueues an inbox check at this battery percent or more (or while charging). */
+    const val INBOX_MIN_BATTERY = 15
     const val KEY_MANUAL = "manual"
     const val TAG_AUTO = "auto"
     const val TAG_MANUAL = "manual"
@@ -46,11 +53,47 @@ object BackupTrigger {
 
     private fun wake(app: Context) {
         val status = BackupStore(app).load()
+        val power = readPower(app)
+        wakeBackup(app, status, power)
+        wakeInbox(app, status, power)
+    }
+
+    private fun wakeBackup(app: Context, status: BackupStatus, power: Power) {
         if (status.lastError == BACKUP_ERROR_AUTH) return
         val z = zone()
         val today = Instant.ofEpochMilli(clock()).atZone(z).toLocalDate()
-        if (!shouldRunAuto(status, today, readPower(app), z)) return
+        if (!shouldRunAuto(status, today, power, z)) return
         enqueue(app, manual = false, ExistingWorkPolicy.KEEP)
+    }
+
+    /**
+     * The inbox rule, independent of the backup's (its once-a-day rule, attempt cap and auth pause):
+     * checkbox on, signed in, no sign-in failure waiting for a re-enable, no restore hold, battery
+     * at least [INBOX_MIN_BATTERY] % or charging. Needs an unmetered network; KEEP leaves a check
+     * that is already queued or running alone.
+     */
+    private fun wakeInbox(app: Context, status: BackupStatus, power: Power) {
+        if (!status.inboxEnabled || !status.signedIn || status.inboxNeedsReauth || status.restoreOfferPending) return
+        if (power.percent < INBOX_MIN_BATTERY && !power.charging) return
+        enqueueInbox(app, manual = false, ExistingWorkPolicy.KEEP, NetworkType.UNMETERED)
+    }
+
+    /**
+     * «Проверить сейчас»: its own unique work on any network. KEEP: a press while a manual check is
+     * queued or running is a no-op (a REPLACE would cancel a worker whose blocking I/O goes on and
+     * still holds the runner's guard; [InboxRunner]'s guard serialises it with a wake check).
+     */
+    fun checkInboxNow(context: Context) {
+        enqueueInbox(context.applicationContext, manual = true, ExistingWorkPolicy.KEEP, NetworkType.CONNECTED)
+    }
+
+    private fun enqueueInbox(app: Context, manual: Boolean, policy: ExistingWorkPolicy, network: NetworkType) {
+        val request = OneTimeWorkRequestBuilder<InboxWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(network).build())
+            .setInputData(workDataOf(KEY_MANUAL to manual))
+            .addTag(if (manual) TAG_MANUAL else TAG_AUTO)
+            .build()
+        WorkManager.getInstance(app).enqueueUniqueWork(if (manual) INBOX_MANUAL_WORK_NAME else INBOX_WORK_NAME, policy, request)
     }
 
     /** «Сделать сейчас»: queued after any run in progress, so the press is not swallowed by it. */

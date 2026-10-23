@@ -36,6 +36,23 @@ class DriveRest(
     override fun list(parent: String): List<RemoteFile> =
         search("'${esc(parent)}' in parents and trashed = false")
 
+    override fun listTree(rootId: String): List<TreeFile> {
+        val out = ArrayList<TreeFile>()
+        val queue = ArrayDeque<Pair<String, String>>() // folder id to its path prefix ("" or "a/b/")
+        queue.add(rootId to "")
+        while (queue.isNotEmpty()) {
+            val (id, prefix) = queue.removeFirst()
+            for (f in search("'${esc(id)}' in parents and trashed = false", TREE_FIELDS)) {
+                if (f.mimeType == FOLDER_MIME) queue.add(f.id to "$prefix${f.name}/")
+                else out += TreeFile(f, prefix + f.name)
+            }
+        }
+        return out
+    }
+
+    override fun findChildren(parent: String, name: String): List<RemoteFile> =
+        search("name = '${esc(name)}' and '${esc(parent)}' in parents and trashed = false", TREE_FIELDS)
+
     override fun listByProp(key: String, value: String): List<RemoteFile> =
         search("appProperties has { key='${esc(key)}' and value='${esc(value)}' } and trashed = false")
 
@@ -231,15 +248,21 @@ class DriveRest(
 
     // ---- plumbing ------------------------------------------------------------------------
 
-    private fun search(q: String): List<RemoteFile> {
+    /** Pages through a files.list query; entries Drive flags as trashed are dropped even if the query let them through. */
+    private fun search(q: String, fields: String = "nextPageToken,files(id,name,size,appProperties)"): List<RemoteFile> {
         val out = ArrayList<RemoteFile>()
         var page: String? = null
         do {
             var url = "$baseUrl/drive/v3/files?q=${enc(q)}&spaces=drive&pageSize=1000" +
-                "&fields=${enc("nextPageToken,files(id,name,size,appProperties)")}"
+                "&fields=${enc(fields)}"
             if (page != null) url += "&pageToken=${enc(page)}"
             val j = json(open("GET", url, null))
-            j.optJSONArray("files")?.let { for (i in 0 until it.length()) out += parseFile(it.getJSONObject(i)) }
+            j.optJSONArray("files")?.let {
+                for (i in 0 until it.length()) {
+                    val o = it.getJSONObject(i)
+                    if (!o.optBoolean("trashed", false)) out += parseFile(o)
+                }
+            }
             page = j.optString("nextPageToken", "").ifEmpty { null }
         } while (page != null)
         return out
@@ -290,14 +313,24 @@ class DriveRest(
     private fun parseFile(j: JSONObject): RemoteFile {
         val props = HashMap<String, String>()
         j.optJSONObject("appProperties")?.let { p -> p.keys().forEach { props[it] = p.getString(it) } }
-        return RemoteFile(j.getString("id"), j.optString("name"), j.optString("size", "0").toLongOrNull() ?: 0L, props)
+        val parents = ArrayList<String>()
+        j.optJSONArray("parents")?.let { for (i in 0 until it.length()) parents += it.getString(i) }
+        return RemoteFile(
+            j.getString("id"), j.optString("name"), j.optString("size", "0").toLongOrNull() ?: 0L, props,
+            j.optString("mimeType"), parseTime(j.optString("modifiedTime")), parents,
+        )
     }
+
+    /** RFC 3339 (`2024-05-06T07:08:09.123Z`) to epoch ms; 0 when absent or unparseable. */
+    private fun parseTime(s: String): Long = if (s.isEmpty()) 0L else
+        runCatching { java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli() }.getOrDefault(0L)
 
     private fun esc(s: String) = s.replace("\\", "\\\\").replace("'", "\\'")
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     private companion object {
         const val FOLDER_MIME = "application/vnd.google-apps.folder"
+        const val TREE_FIELDS = "nextPageToken,files(id,name,size,mimeType,modifiedTime,parents,appProperties,trashed)"
         const val FILE_FIELDS = "id,name,size,appProperties"
         const val THRESHOLD = 5L * 1024 * 1024
         val RESTART_CODES = setOf(400, 404, 410, 416)

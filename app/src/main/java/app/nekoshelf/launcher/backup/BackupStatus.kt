@@ -19,6 +19,23 @@ data class BackupStatus(
     val booksPending: Int,
     val booksCaughtUpOnce: Boolean,
     val signedInAt: Long?,
+    /** «Забирать новые книги с Диска» is on (the readonly grant was given). */
+    val inboxEnabled: Boolean = false,
+    /** When the inbox last checked `Nekoshelf/books`. */
+    val inboxLastCheckAt: Long? = null,
+    /** Books the last inbox check downloaded. */
+    val inboxReceived: Int = 0,
+    /** The last inbox check's error text; null when it went fine. */
+    val inboxError: String? = null,
+    /**
+     * A sign-in failure (HTTP 401 / [app.nekoshelf.launcher.backup.drive.DriveAuthException], never a
+     * 403 or error text) ended an inbox run: the wake skips the inbox until the owner turns the
+     * checkbox on again ([BackupStore.inboxEnabled]).
+     */
+    val inboxNeedsReauth: Boolean = false,
+    /** How many books the last inbox check that brought any brought (0: none ever), and when ([inboxLastReceivedAt]). */
+    val inboxLastReceived: Int = 0,
+    val inboxLastReceivedAt: Long? = null,
 ) {
     companion object {
         val EMPTY = BackupStatus(
@@ -37,6 +54,13 @@ data class BackupStatus(
             booksPending = 0,
             booksCaughtUpOnce = false,
             signedInAt = null,
+            inboxEnabled = false,
+            inboxLastCheckAt = null,
+            inboxReceived = 0,
+            inboxError = null,
+            inboxNeedsReauth = false,
+            inboxLastReceived = 0,
+            inboxLastReceivedAt = null,
         )
     }
 }
