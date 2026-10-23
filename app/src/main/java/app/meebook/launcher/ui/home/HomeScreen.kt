@@ -2,6 +2,7 @@ package app.meebook.launcher.ui.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -182,7 +184,8 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions, backup:
             Overlay.Backup -> {
                 val status = state.backup
                 if (status == null) {
-                    Box(Modifier.fillMaxSize().background(Color.White))
+                    // Blank until the status is read; it still covers the home screen's taps.
+                    Box(Modifier.fillMaxSize().background(Color.White).pointerInput(Unit) { detectTapGestures { } })
                 } else {
                     BackupScreen(
                         status = status,
@@ -202,6 +205,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions, backup:
                         onSaveManga = backup::saveMangaBackup,
                         onDismiss = backup::closeRestore,
                         message = r.message,
+                        busy = state.backupUi.busy,
                     )
                 }
             }

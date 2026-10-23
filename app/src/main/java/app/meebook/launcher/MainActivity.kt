@@ -147,6 +147,7 @@ class MainActivity : ComponentActivity(), HomeActions {
         val alreadyHome = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         super.onNewIntent(intent)
         state.overlay = null
+        backup.closeRestore()
         if (alreadyHome) state.nav.page = 0
     }
 

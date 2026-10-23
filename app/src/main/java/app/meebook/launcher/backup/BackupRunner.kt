@@ -298,7 +298,13 @@ class BackupRunner(
     }
 
     /** Drive name of the newest «Манга» backup (`manga-YYYY-MM-DD.tachibk`), or null when there is none. */
-    fun latestMangaBackupName(): String? = newest(KIND_MANGA, MANGA_NAME)?.name
+    fun latestMangaBackupName(): String? = latestMangaBackupFile()?.name
+
+    /** The newest «Манга» backup on Drive (its name and id), or null when there is none. */
+    fun latestMangaBackupFile(): RemoteFile? = newest(KIND_MANGA, MANGA_NAME)
+
+    /** Downloads exactly [file] (e.g. from [latestMangaBackupFile]) into [to], by its id. */
+    fun download(file: RemoteFile, to: File) = drive.download(file.id, to)
 
     /** Downloads the newest KOReader snapshot into [to]; false when there is none. */
     fun latestSnapshot(to: File): Boolean = downloadNewest(KIND_KOREADER, KOREADER_NAME, to)

@@ -152,8 +152,39 @@ class BackupScreenTest {
         screen(signedIn.copy(restoreOfferPending = true), BackupUi(offerDate = LocalDate.of(2026, 10, 21)))
         rule.onNodeWithText("На Диске есть бэкап от 21 октября — восстановить?").assertExists()
         rule.onNodeWithText("Следующий: ждёт ответа про восстановление").assertExists()
+        // A run now would make a fresh reader's near-empty snapshot the newest one.
+        rule.onNodeWithText("Сделать сейчас").assertIsNotEnabled()
         rule.onNodeWithText("Не нужно").performClick()
         rule.runOnIdle { assertEquals(1, declines.intValue) }
+    }
+
+    @Test fun offerCardIsHiddenWhileARestoreHoldsBackups() {
+        screen(signedIn.copy(restoreOfferPending = true), BackupUi(offerDate = LocalDate.of(2026, 10, 21), restoring = true))
+        rule.onNodeWithText("На Диске есть бэкап от 21 октября — восстановить?").assertDoesNotExist()
+        rule.onNodeWithText("Не нужно").assertDoesNotExist()
+    }
+
+    @Test fun busyDialogDisablesRestoreAndMangaSaveButNotCancel() {
+        val items = listOf(RestoreItem("books/x.sdr/m.lua", null, File("x")))
+        rule.setContent {
+            RestoreDialog(
+                plan = RestorePlan(items, books = 0, sdr = 1, statsRestored = false),
+                mangaAvailable = true,
+                onConfirm = { confirms.intValue++ },
+                onSaveManga = { mangaSaves.intValue++ },
+                onDismiss = {},
+                message = "Сохраняю…",
+                busy = true,
+            )
+        }
+        rule.onNodeWithText("Сохраняю…").assertExists()
+        rule.onNodeWithText("Восстановить").assertIsNotEnabled().performClick()
+        rule.onNodeWithText("Скачать бэкап Манги в Загрузки").assertIsNotEnabled().performClick()
+        rule.onNodeWithText("Отмена").assertIsEnabled()
+        rule.runOnIdle {
+            assertEquals(0, confirms.intValue)
+            assertEquals(0, mangaSaves.intValue)
+        }
     }
 
     @Test fun messageIsShown() {

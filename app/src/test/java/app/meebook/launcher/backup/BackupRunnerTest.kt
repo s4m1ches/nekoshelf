@@ -449,6 +449,19 @@ class BackupRunnerTest {
         assertEquals(day0.plusDays(2), r.latestSnapshotDate())
         assertEquals("manga-2026-10-25.tachibk", r.latestMangaBackupName())
 
+        // The file looked up is the file downloaded, even if a newer one appears in between.
+        val named = r.latestMangaBackupFile()!!
+        manga = { ByteArrayInputStream("even newer".toByteArray()) }
+        now = at(day0.plusDays(3))
+        run()
+        val got = File(tmp.root, "named.tachibk")
+        r.download(named, got)
+        assertEquals("tachibk", got.readText())
+        assertEquals("manga-2026-10-26.tachibk", r.latestMangaBackupName())
+        now = at(day0.plusDays(2))
+        drive.nodes.values.filter { it.name.endsWith("-2026-10-26.zip") || it.name.endsWith("-2026-10-26.tachibk") }
+            .map { it.id }.forEach { drive.nodes.remove(it) }
+
         // No KOReader snapshot left (or none matching the name): the «Манга» date counts.
         drive.nodes.values.filter { it.name.startsWith("koreader-") }.map { it.id }.forEach { drive.nodes.remove(it) }
         drive.nodes.values.filter { it.name == "manga-2026-10-25.tachibk" }.map { it.id }.forEach { drive.nodes.remove(it) }

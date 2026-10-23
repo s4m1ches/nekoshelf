@@ -31,7 +31,8 @@ data class RestoreUi(val plan: RestorePlan?, val mangaAvailable: Boolean, val me
  * - nothing missing: says so, only «Закрыть»;
  * - otherwise the summary, «Восстановить?», the KOReader warning, «Восстановить» / «Отмена».
  * Once the plan is known, «Скачать бэкап Манги в Загрузки» is offered when Drive has one
- * ([mangaAvailable]). Nothing is written before [onConfirm]. Back closes it.
+ * ([mangaAvailable]). Nothing is written before [onConfirm]. Back closes it. While [busy] (the
+ * «Манга» save) «Восстановить» and the save button are disabled; closing still works.
  */
 @Composable
 fun RestoreDialog(
@@ -41,6 +42,7 @@ fun RestoreDialog(
     onSaveManga: () -> Unit,
     onDismiss: () -> Unit,
     message: String? = null,
+    busy: Boolean = false,
 ) {
     BackHandler(onBack = onDismiss)
     // Swallows touches around the card, so nothing under the dialog reacts.
@@ -55,7 +57,7 @@ fun RestoreDialog(
                 }
                 plan.items.isEmpty() -> {
                     Text(stringResource(R.string.restore_nothing), style = serif(15f, bold = true))
-                    MangaSave(mangaAvailable, onSaveManga, message)
+                    MangaSave(mangaAvailable, onSaveManga, message, busy)
                     Row(Modifier.padding(top = 14.dp)) {
                         OutlinedButton(stringResource(R.string.close), onClick = onDismiss, modifier = Modifier.weight(1f))
                     }
@@ -65,9 +67,9 @@ fun RestoreDialog(
                     Text(stringResource(R.string.restore_summary, plan.books, plan.sdr, stats), style = serif(15f))
                     Text(stringResource(R.string.restore_ask), style = serif(15f, bold = true), modifier = Modifier.padding(top = 6.dp))
                     Text(stringResource(R.string.restore_close_koreader), style = serif(13f), modifier = Modifier.padding(top = 6.dp))
-                    MangaSave(mangaAvailable, onSaveManga, message)
+                    MangaSave(mangaAvailable, onSaveManga, message, busy)
                     Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        FilledButton(stringResource(R.string.restore_confirm), onClick = onConfirm, modifier = Modifier.weight(1f))
+                        FilledButton(stringResource(R.string.restore_confirm), enabled = !busy, onClick = onConfirm, modifier = Modifier.weight(1f))
                         OutlinedButton(stringResource(R.string.restore_cancel), onClick = onDismiss, modifier = Modifier.weight(1f))
                     }
                 }
@@ -77,10 +79,10 @@ fun RestoreDialog(
 }
 
 @Composable
-private fun MangaSave(available: Boolean, onSave: () -> Unit, message: String?) {
+private fun MangaSave(available: Boolean, onSave: () -> Unit, message: String?, busy: Boolean) {
     if (available) {
         Row(Modifier.padding(top = 12.dp)) {
-            OutlinedButton(stringResource(R.string.restore_save_manga), onClick = onSave, modifier = Modifier.weight(1f))
+            OutlinedButton(stringResource(R.string.restore_save_manga), enabled = !busy, onClick = onSave, modifier = Modifier.weight(1f))
         }
     }
     if (message != null) Text(message, style = serif(13f, bold = true), modifier = Modifier.padding(top = 6.dp))

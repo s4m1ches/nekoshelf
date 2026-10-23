@@ -47,14 +47,16 @@ enum class BackupWork { IDLE, ENQUEUED, RUNNING }
 
 /**
  * What the backup screen shows beside the stored [BackupStatus]: the work's state, the result of
- * the last action ([message]), the date for the restore offer, and [busy] while a sign-in,
- * restore or «Манга» save is under way (its buttons are then disabled).
+ * the last action ([message]), the date for the restore offer, [busy] while a sign-in,
+ * restore or «Манга» save is under way (its buttons are then disabled), and [restoring] while a
+ * restore holds backups (from «Восстановить…» until it ends; the offer card is hidden then).
  */
 data class BackupUi(
     val work: BackupWork = BackupWork.IDLE,
     val message: String? = null,
     val offerDate: LocalDate? = null,
     val busy: Boolean = false,
+    val restoring: Boolean = false,
 )
 
 /** What the backup screen and the restore dialog ask the activity to do. */
@@ -146,7 +148,7 @@ fun BackupScreen(
             FilledButton(stringResource(R.string.backup_sign_in), enabled = !ui.busy, onClick = onSignIn, modifier = Modifier.padding(vertical = 6.dp))
         }
 
-        if (status.restoreOfferPending) {
+        if (status.restoreOfferPending && !ui.restoring) {
             Column(Modifier.padding(vertical = 8.dp).fillMaxWidth().outlinedCard().padding(12.dp)) {
                 val offer = ui.offerDate?.let { stringResource(R.string.backup_offer, dayMonthText(it)) }
                     ?: stringResource(R.string.backup_offer_no_date)
@@ -192,10 +194,11 @@ fun BackupScreen(
         }
 
         Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Disabled while a run is queued or running: presses would only chain more runs (R22).
+            // Disabled while a run is queued or running: presses would only chain more runs (R22);
+            // and while the restore offer waits: a run would make a near-empty snapshot the newest.
             FilledButton(
                 stringResource(R.string.backup_now),
-                enabled = ui.work == BackupWork.IDLE && !ui.busy,
+                enabled = ui.work == BackupWork.IDLE && !ui.busy && !status.restoreOfferPending,
                 onClick = onBackupNow,
                 modifier = Modifier.weight(1f),
             )

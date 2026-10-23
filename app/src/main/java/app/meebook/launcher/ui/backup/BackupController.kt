@@ -33,24 +33,60 @@ import app.meebook.launcher.backup.saveIntoFolder
 import app.meebook.launcher.backup.showFailureMark
 import app.meebook.launcher.ui.home.HomeState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileNotFoundException
 import java.time.LocalDate
+
+/** What [BackupController] works on; tests swap in a fake Drive, temp folders and an inline dispatcher. */
+class BackupDeps(
+    val store: BackupStore,
+    /** A runner whose Drive asks [token] before every call. */
+    val runner: (token: () -> String?) -> BackupRunner,
+    val koreaderRoot: () -> File,
+    val homeDir: () -> File,
+    val downloads: () -> File,
+    val io: CoroutineDispatcher,
+) {
+    companion object {
+        fun real(app: Context): BackupDeps {
+            val store = BackupStore(app)
+            return BackupDeps(
+                store = store,
+                runner = { token -> backupRunner(app, store, token) },
+                koreaderRoot = ::koreaderRoot,
+                homeDir = ::koreaderHomeDir,
+                downloads = { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) },
+                io = Dispatchers.IO,
+            )
+        }
+    }
+}
 
 /**
  * The backup screen's side of [app.meebook.launcher.MainActivity]: sign-in, «Сделать сейчас»,
  * the restore offer, restore and the «Манга» save; it also keeps [HomeState.backup] (and the
  * header's «☁!») and the work's state current. Everything that touches prefs, Play services,
- * Drive or files runs on Dispatchers.IO; the main thread only swaps state.
+ * Drive or files runs on [BackupDeps.io]; the main thread only swaps state.
+ *
+ * Ruling R28: `restoreOfferPending` is also the "hold automatic backups" flag for a whole restore.
+ * «Восстановить…» sets it, remembering the value before. Only an answer that ends the matter
+ * clears it: «Не нужно», a restore that completed (fully or partly), or an empty plan. A failed
+ * plan, «Отмена», leaving the dialog, or a restore that failed outright puts the remembered value
+ * back (a pending offer stays pending; a restore started from the button releases the hold).
  *
  * Construct it in `onCreate` (it registers the sign-in result launcher).
  */
-class BackupController(private val activity: ComponentActivity, private val state: HomeState) : BackupActions {
+class BackupController(
+    private val activity: ComponentActivity,
+    private val state: HomeState,
+    private val deps: BackupDeps = BackupDeps.real(activity.applicationContext),
+) : BackupActions {
     private val app: Context = activity.applicationContext
-    private val store = BackupStore(app)
+    private val store = deps.store
+    private val io = deps.io
     private val auth = GoogleAuth(app)
     private val scope get() = activity.lifecycleScope
 
@@ -62,6 +98,8 @@ class BackupController(private val activity: ComponentActivity, private val stat
     private var restoreZip: File? = null
     /** Bumped whenever the restore dialog closes or reopens, so a stale plan is dropped. */
     private var restoreGen = 0
+    /** While the restore dialog holds backups: the flag's value before «Восстановить…» (R28). */
+    private var holdPrevious: Boolean? = null
 
     private val signInLauncher =
         activity.registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult(), ::onSignInResult)
@@ -108,7 +146,7 @@ class BackupController(private val activity: ComponentActivity, private val stat
     }
 
     private suspend fun loadStatus(): BackupStatus {
-        val s = withContext(Dispatchers.IO) { store.load() }
+        val s = withContext(io) { store.load() }
         state.backup = s
         state.backupFailing = showFailureMark(s, System.currentTimeMillis())
         return s
@@ -120,7 +158,7 @@ class BackupController(private val activity: ComponentActivity, private val stat
         if (state.backupUi.busy) return
         ui { copy(busy = true, message = null) }
         scope.launch {
-            val intent = withContext(Dispatchers.IO) { auth.signInIntent(activity) }
+            val intent = withContext(io) { auth.signInIntent(activity) }
             if (intent != null) {
                 signInPending = true
                 try {
@@ -133,7 +171,7 @@ class BackupController(private val activity: ComponentActivity, private val stat
                 return@launch
             }
             // No UI needed means a token is already available (null also covers Play services failing).
-            afterToken(withContext(Dispatchers.IO) { auth.silentToken() })
+            afterToken(withContext(io) { auth.silentToken() })
         }
     }
 
@@ -155,12 +193,12 @@ class BackupController(private val activity: ComponentActivity, private val stat
             return
         }
         ui { copy(message = text(R.string.backup_checking_drive)) }
-        val outcome = withContext(Dispatchers.IO) {
+        val outcome = withContext(io) {
             try {
                 val wasSignedIn = store.load().signedIn
                 var date: LocalDate? = null
                 if (!wasSignedIn) {
-                    val runner = backupRunner(app, store) { token }
+                    val runner = deps.runner { token }
                     val has = runner.hasRemoteBackups()
                     if (has) date = runner.latestSnapshotDate()
                     store.update { it.copy(restoreOfferPending = has) }
@@ -187,6 +225,9 @@ class BackupController(private val activity: ComponentActivity, private val stat
 
     override fun backupNow() {
         if (state.backupUi.busy || state.backupUi.work != BackupWork.IDLE) return
+        // While an offer (or a restore) is pending, a run would make the fresh reader's near-empty
+        // snapshot the newest one. Unknown status counts as pending.
+        if (state.backup?.restoreOfferPending != false) return
         ui { copy(message = null) }
         BackupTrigger.runNow(app)
     }
@@ -194,8 +235,8 @@ class BackupController(private val activity: ComponentActivity, private val stat
     override fun declineRestoreOffer() {
         if (state.backupUi.busy) return
         scope.launch {
-            withContext(Dispatchers.IO) { store.update { it.copy(restoreOfferPending = false) } }
-            refreshStatus()
+            withContext(io) { store.update { it.copy(restoreOfferPending = false) } }
+            loadStatus()
             // Automatic backups were waiting for this answer.
             BackupTrigger.onWake(app)
         }
@@ -203,9 +244,11 @@ class BackupController(private val activity: ComponentActivity, private val stat
 
     private fun fetchOfferDate() {
         scope.launch {
-            val date = withContext(Dispatchers.IO) {
+            val date = withContext(io) {
                 try {
                     runner().latestSnapshotDate()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     null
                 }
@@ -218,24 +261,30 @@ class BackupController(private val activity: ComponentActivity, private val stat
 
     override fun openRestore() {
         if (state.backupUi.busy || state.restore != null) return
-        ui { copy(message = null) }
+        ui { copy(message = null, restoring = true) }
         state.restore = RestoreUi(plan = null, mangaAvailable = false)
         val gen = ++restoreGen
         scope.launch {
-            // Either answer to the offer clears it.
-            if (state.backup?.restoreOfferPending == true) {
-                withContext(Dispatchers.IO) { store.update { it.copy(restoreOfferPending = false) } }
-                refreshStatus()
+            // Hold automatic backups for the whole restore (R28), remembering the value before.
+            val previous = withContext(io) {
+                val p = store.load().restoreOfferPending
+                store.update { it.copy(restoreOfferPending = true) }
+                p
             }
+            if (gen != restoreGen) { // closed while the flag was being set
+                setOfferPending(previous)
+                return@launch
+            }
+            holdPrevious = previous
             val dir = File(app.cacheDir, RESTORE_DIR)
             val zip = File(dir, "snapshot-$gen.zip")
-            val result = withContext(Dispatchers.IO) {
+            val result = withContext(io) {
                 try {
                     dir.deleteRecursively()
                     dir.mkdirs()
                     val runner = runner()
-                    val plan = if (runner.latestSnapshot(zip)) planRestore(zip, koreaderRoot(), koreaderHomeDir()) else EMPTY_PLAN
-                    Result.success(plan to (runner.latestMangaBackupName() != null))
+                    val plan = if (runner.latestSnapshot(zip)) planRestore(zip, deps.koreaderRoot(), deps.homeDir()) else EMPTY_PLAN
+                    Result.success(plan to (runner.latestMangaBackupFile() != null))
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -244,58 +293,88 @@ class BackupController(private val activity: ComponentActivity, private val stat
                     Result.failure(e)
                 }
             }
-            if (gen != restoreGen) { // closed meanwhile
-                withContext(Dispatchers.IO) { zip.delete() }
+            if (gen != restoreGen) { // closed meanwhile; closeRestore gave the hold back
+                withContext(io) { zip.delete() }
                 return@launch
             }
             result.fold(
                 onSuccess = { (plan, manga) ->
                     restoreZip = zip
                     state.restore = RestoreUi(plan, manga)
+                    // Nothing missing on the reader: that answers the offer too.
+                    if (plan.items.isEmpty()) {
+                        holdPrevious = null
+                        setOfferPending(false)
+                    }
                 },
                 onFailure = { e ->
+                    val p = holdPrevious ?: previous
+                    holdPrevious = null
                     state.restore = null
-                    ui { copy(message = backupErrorText(e)) }
+                    ui { copy(message = backupErrorText(e), restoring = false) }
+                    setOfferPending(p)
                 },
             )
         }
     }
 
+    /** «Отмена» / «Закрыть», Back, or leaving the screen: the dialog goes, the hold is given back. */
     override fun closeRestore() {
-        if (state.restore == null && restoreZip == null) return
+        if (state.restore == null && restoreZip == null && holdPrevious == null) return
         restoreGen++
         state.restore = null
+        ui { copy(restoring = false) }
+        holdPrevious?.let { setOfferPending(it) }
+        holdPrevious = null
         val zip = restoreZip ?: return
         restoreZip = null
-        scope.launch { withContext(Dispatchers.IO) { zip.delete() } }
+        scope.launch { withContext(io) { zip.delete() } }
     }
 
-    /** Ruling R26: on IO; the snapshot is deleted afterwards whatever happened. */
+    /**
+     * Ruling R26: on IO; the snapshot is deleted afterwards whatever happened. The hold stays for
+     * the whole apply; a completed restore (also a partial one) clears the flag, an outright
+     * failure puts the previous value back (R28).
+     */
     override fun confirmRestore() {
         val plan = state.restore?.plan ?: return
         val zip = restoreZip ?: return
         if (state.backupUi.busy) return
+        val previous = holdPrevious ?: false
+        holdPrevious = null
         restoreGen++
         restoreZip = null
         state.restore = null
         ui { copy(busy = true, message = text(R.string.restore_working)) }
         scope.launch {
-            val message = withContext(Dispatchers.IO) {
+            val (message, completed) = withContext(io) {
                 try {
                     val runner = runner()
                     applyRestore(zip, plan) { book, to -> runner.downloadBook(book, to) }
-                    text(R.string.restore_done)
+                    text(R.string.restore_done) to true
                 } catch (e: RestoreFailedException) {
                     Log.w(TAG, "restore partly failed", e)
-                    app.getString(R.string.restore_partial, e.failed)
+                    app.getString(R.string.restore_partial, e.failed) to true
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "restore failed", e)
-                    backupErrorText(e)
+                    backupErrorText(e) to false
                 } finally {
                     zip.delete()
                 }
             }
-            ui { copy(busy = false, message = message) }
+            withContext(io) { store.update { it.copy(restoreOfferPending = if (completed) false else previous) } }
+            ui { copy(busy = false, restoring = false, message = message) }
+            loadStatus()
+        }
+    }
+
+    /** Stores the offer/hold flag off the main thread, then rereads the status. */
+    private fun setOfferPending(value: Boolean) {
+        scope.launch {
+            withContext(io) { store.update { it.copy(restoreOfferPending = value) } }
+            loadStatus()
         }
     }
 
@@ -305,20 +384,20 @@ class BackupController(private val activity: ComponentActivity, private val stat
         state.restore = state.restore?.copy(message = text(R.string.manga_saving))
         ui { copy(busy = true) }
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
+            val result = withContext(io) {
                 try {
                     val runner = runner()
-                    val name = runner.latestMangaBackupName()
-                    if (name == null) {
+                    val file = runner.latestMangaBackupFile()
+                    if (file == null) {
                         text(R.string.manga_none)
                     } else {
-                        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                        val saved = saveIntoFolder(downloads, name) { tmp ->
-                            if (!runner.latestMangaBackup(tmp)) throw FileNotFoundException("no «Манга» backup on Drive")
-                        }
+                        // Exactly the file named: downloaded by its id, not "the newest" looked up again.
+                        val saved = saveIntoFolder(deps.downloads(), file.name) { tmp -> runner.download(file, tmp) }
                         MediaScannerConnection.scanFile(app, arrayOf(saved.path), null, null)
                         app.getString(R.string.manga_saved, saved.name)
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "«Манга» backup save failed", e)
                     backupErrorText(e)
@@ -333,7 +412,7 @@ class BackupController(private val activity: ComponentActivity, private val stat
 
     // ---- helpers -------------------------------------------------------------------------------
 
-    private fun runner(): BackupRunner = backupRunner(app, store, auth::silentToken)
+    private fun runner(): BackupRunner = deps.runner(auth::silentToken)
 
     private inline fun ui(change: BackupUi.() -> BackupUi) {
         state.backupUi = state.backupUi.change()
