@@ -22,7 +22,8 @@ class KoreaderSnapshotTest {
 
     private fun statsDb(f: File, rows: Int, wal: Boolean = false): SQLiteDatabase {
         f.parentFile!!.mkdirs()
-        val flags = SQLiteDatabase.CREATE_IF_NECESSARY or (if (wal) SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING else 0)
+        val flags = SQLiteDatabase.CREATE_IF_NECESSARY or SQLiteDatabase.NO_LOCALIZED_COLLATORS or
+            (if (wal) SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING else 0)
         val db = SQLiteDatabase.openDatabase(f.path, null, flags)
         if (wal) db.rawQuery("PRAGMA wal_autocheckpoint=0", null).use { it.moveToFirst() }
         db.execSQL("CREATE TABLE page_stat_data (id_book integer, page integer, start_time integer, duration integer, total_pages integer)")
@@ -34,16 +35,19 @@ class KoreaderSnapshotTest {
         return db
     }
 
-    private fun countRows(zip: File, entry: String): Long {
+    private fun <T> query(zip: File, entry: String, sql: String, read: (android.database.Cursor) -> T): T {
         val f = File(tmp.newFolder(), "x.sqlite3")
         ZipFile(zip).use { z -> z.getInputStream(z.getEntry(entry)).use { i -> f.outputStream().use { i.copyTo(it) } } }
-        val db = SQLiteDatabase.openDatabase(f.path, null, SQLiteDatabase.OPEN_READONLY)
+        val db = SQLiteDatabase.openDatabase(f.path, null, SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
         return try {
-            db.rawQuery("SELECT count(*) FROM page_stat_data", null).use { it.moveToFirst(); it.getLong(0) }
+            db.rawQuery(sql, null).use(read)
         } finally {
             db.close()
         }
     }
+
+    private fun countRows(zip: File, entry: String): Long =
+        query(zip, entry, "SELECT count(*) FROM page_stat_data") { it.moveToFirst(); it.getLong(0) }
 
     private fun entries(zip: File): Set<String> =
         ZipFile(zip).use { z -> z.entries().asSequence().map { it.name }.toSet() }
@@ -175,6 +179,37 @@ class KoreaderSnapshotTest {
 
         assertEquals(listOf("snap.zip"), out.parentFile!!.list()!!.toList())
         assertTrue("books-manifest.json" in entries(out))
+    }
+
+    @Test fun consolidatedStatsGetsNoAndroidMetadataTable() {
+        val ko = tmp.newFolder("koreader")
+        val home = tmp.newFolder("Books")
+        statsDb(File(ko, "settings/statistics.sqlite3"), rows = 1)
+        val out = File(tmp.root, "snap.zip")
+        KoreaderSnapshot.build(ko, home, out)
+
+        val tables = query(out, "koreader/settings/statistics.sqlite3", "SELECT name FROM sqlite_master WHERE type = 'table'") { c ->
+            buildList { while (c.moveToNext()) add(c.getString(0)) }
+        }
+        assertEquals(listOf("page_stat_data"), tables)
+    }
+
+    @Test fun staleSnapshotTempsAreRemovedAndDotNamesNeverZipped() {
+        val ko = tmp.newFolder("koreader")
+        val home = tmp.newFolder("Books")
+        file(ko, "settings/filemanager.lua")
+        file(ko, "settings/.restore-123.tmp", "half a restored file")
+        file(ko, "patches/.hidden/x.lua")
+        val outDir = tmp.newFolder("out")
+        file(outDir, ".snapshot-42.tmp", "truncated zip of a killed build")
+        file(outDir, ".snapshot-stats-7/statistics.sqlite3", "stats copy of a killed build")
+        file(outDir, "keep.txt", "not ours")
+        val out = File(outDir, "snap.zip")
+
+        KoreaderSnapshot.build(ko, home, out)
+
+        assertEquals(setOf("snap.zip", "keep.txt"), outDir.list()!!.toSet())
+        assertEquals(setOf("koreader/settings/filemanager.lua", "books-manifest.json"), entries(out))
     }
 
     @Test fun missingOrUnreadableRootsThrowInsteadOfAnEmptySnapshot() {

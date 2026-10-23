@@ -57,8 +57,10 @@ object KoreaderSnapshot {
         val manifest = scanBooks(homeDir)
         val dir = out.absoluteFile.parentFile ?: throw IOException("no folder for $out")
         dir.mkdirs()
-        val tmp = File.createTempFile(".snapshot-", ".tmp", dir)
-        val work = Files.createTempDirectory(dir.toPath(), ".snapshot-stats-").toFile()
+        // Leftovers of a build that was killed (our own ".snapshot-*" names only).
+        dir.listFiles()?.forEach { if (it.name.startsWith(SNAPSHOT_TEMP_PREFIX)) it.deleteRecursively() }
+        val tmp = File.createTempFile(SNAPSHOT_TEMP_PREFIX, ".tmp", dir)
+        val work = Files.createTempDirectory(dir.toPath(), "${SNAPSHOT_TEMP_PREFIX}stats-").toFile()
         try {
             ZipOutputStream(tmp.outputStream().buffered()).use { zip ->
                 for ((rel, f) in koreaderFiles(koreaderRoot)) {
@@ -81,6 +83,7 @@ object KoreaderSnapshot {
         val out = ArrayList<Pair<String, File>>()
         fun walk(dir: File, prefix: String) {
             for (c in listOrThrow(dir).sortedBy { it.name }) {
+                if (c.name.startsWith(".")) continue // e.g. our own ".restore-*.tmp" leftovers
                 val rel = prefix + c.name
                 if (c.isDirectory) walk(c, "$rel/")
                 else if (c.isFile && isSnapshotKoreaderPath(rel) && !isStatsSibling(rel)) out += rel to c
@@ -121,7 +124,8 @@ object KoreaderSnapshot {
             val src = File(db.path + s)
             if (src.isFile) src.copyTo(File(copy.path + s), overwrite = true)
         }
-        val conn = SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READWRITE)
+        // NO_LOCALIZED_COLLATORS: Android would otherwise add an android_metadata table to the copy.
+        val conn = SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
         try {
             conn.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
             conn.rawQuery("PRAGMA journal_mode=DELETE", null).use { it.moveToFirst() }
@@ -132,6 +136,8 @@ object KoreaderSnapshot {
         }
         val wal = File(copy.path + "-wal")
         if (wal.exists() && wal.length() > 0) throw IOException("statistics.sqlite3 -wal not checkpointed")
+        // Never drop the stats DB silently (addFile skips files that vanished).
+        if (!copy.isFile) throw IOException("statistics.sqlite3 copy disappeared")
         addFile(zip, "$KOREADER_PREFIX$STATS_REL", copy)
     }
 
@@ -176,6 +182,7 @@ internal val SQLITE_SIBLINGS = listOf("-wal", "-shm", "-journal")
 private val KOREADER_FILES = listOf("history.lua", "settings.reader.lua", "defaults.custom.lua")
 private val KOREADER_DIRS = listOf("settings", "patches", "styletweaks")
 private const val BOOKINFO_CACHE = "bookinfo_cache.sqlite3"
+private const val SNAPSHOT_TEMP_PREFIX = ".snapshot-"
 
 internal fun isSdrName(name: String) = name.endsWith(".sdr", ignoreCase = true)
 

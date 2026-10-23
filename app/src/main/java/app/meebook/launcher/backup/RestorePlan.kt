@@ -85,7 +85,8 @@ fun planRestore(zip: File, koreaderRoot: File, homeDir: File): RestorePlan {
  *   plan still offers it;
  * - a book is fetched by [downloadBook] into the temp file it is given and placed only if it has
  *   the manifest's size (otherwise [IOException]).
- * Stops on the first error; running it again only fills what is still missing.
+ * A unit that fails is skipped and the rest still come back; afterwards one
+ * [RestoreFailedException] says how many failed. Running it again only fills what is still missing.
  */
 fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -> Unit) {
     val koItems = ArrayList<RestoreItem>()
@@ -110,20 +111,30 @@ fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -
     (koItems.map { it.target.parentFile } + sdrGroups.keys.map { it.parentFile } + bookItems.map { it.target.parentFile })
         .filterNotNull().toSet().forEach(::removeStaleTemps)
 
+    val failures = ArrayList<Exception>()
+    // One failing item (bad entry, failed download) must not keep the rest from coming back.
+    fun attempt(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            failures += e
+        }
+    }
+
     ZipFile(zip).use { z ->
         val writtenBases = HashSet<String>()
-        for (item in koItems) {
+        for (item in koItems) attempt {
             val entry = item.zipEntry!!
             val target = item.target
             val rel = entry.removePrefix(KOREADER_PREFIX)
-            if (isStatsSibling(rel)) continue
+            if (isStatsSibling(rel)) return@attempt
             val base = sqliteBaseOf(rel)
             val fill = { tmp: File -> copyEntry(z, entry, tmp) }
             if (base != null) {
-                if (rel.endsWith("-shm") || base !in writtenBases || target.exists()) continue
+                if (rel.endsWith("-shm") || base !in writtenBases || target.exists()) return@attempt
                 place(target, fill)
             } else {
-                if (!koreaderFileRestorable(rel, target)) continue
+                if (!koreaderFileRestorable(rel, target)) return@attempt
                 val placed = place(
                     target, fill,
                     precondition = { siblingsAbsent(target) },
@@ -133,8 +144,8 @@ fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -
             }
         }
 
-        for ((sdrDir, files) in sdrGroups) {
-            if (sdrDir.exists()) continue
+        for ((sdrDir, files) in sdrGroups) attempt {
+            if (sdrDir.exists()) return@attempt
             placeDir(sdrDir) { tmpDir ->
                 for ((entry, inner) in files) {
                     val f = resolveInside(tmpDir, inner) ?: throw IOException("unsafe entry $entry")
@@ -144,9 +155,9 @@ fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -
             }
         }
 
-        for (item in bookItems) {
+        for (item in bookItems) attempt {
             val book = item.book!!
-            if (item.target.exists()) continue
+            if (item.target.exists()) return@attempt
             place(item.target, fill = { tmp ->
                 downloadBook(book, tmp)
                 val got = if (tmp.isFile) tmp.length() else -1L
@@ -154,7 +165,15 @@ fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -
             })
         }
     }
+
+    if (failures.isNotEmpty()) {
+        throw RestoreFailedException(failures.size, failures).apply { failures.drop(1).forEach(::addSuppressed) }
+    }
 }
+
+/** [failed] restore units (a file, a whole `.sdr` folder or a book) could not be written; the rest were. */
+class RestoreFailedException(val failed: Int, val causes: List<Exception>) :
+    IOException("$failed restore item(s) failed; first: ${causes.firstOrNull()?.message}", causes.firstOrNull())
 
 /** "x-wal" / "x-shm" / "x-journal" -> "x"; anything else -> null. */
 private fun sqliteBaseOf(rel: String): String? =
@@ -185,7 +204,7 @@ internal fun isEmptyStatsDb(f: File): Boolean {
     val copy = File.createTempFile("stats-check", ".sqlite3")
     return try {
         f.copyTo(copy, overwrite = true)
-        val db = SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READWRITE)
+        val db = SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
         try {
             db.rawQuery("SELECT count(*) FROM page_stat_data", null).use { c -> c.moveToFirst() && c.getLong(0) == 0L }
         } finally {
@@ -206,6 +225,13 @@ private fun copyEntry(z: ZipFile, name: String, dest: File) {
 
 private const val TEMP_PREFIX = ".restore-"
 private const val TEMP_SUFFIX = ".tmp"
+
+/**
+ * Name of a `.sdr` temp folder: short and independent of the target's name, so a long
+ * (Cyrillic: 2 bytes/char) book title can never push it past the 255-byte name limit.
+ */
+internal fun restoreTempDirName(): String =
+    "$TEMP_PREFIX${System.nanoTime()}-${(Math.random() * 1_000_000).toInt()}$TEMP_SUFFIX"
 
 /** Deletes temp files/folders a killed restore left in [dir] (only our own `.restore-*.tmp` names). */
 private fun removeStaleTemps(dir: File) {
@@ -252,8 +278,8 @@ private fun place(
 private fun placeDir(target: File, fill: (File) -> Unit): Boolean {
     val dir = target.parentFile ?: throw IOException("no parent for $target")
     if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create $dir")
-    val tmp = File(dir, "$TEMP_PREFIX${target.name}-${System.nanoTime()}$TEMP_SUFFIX")
-    if (!tmp.mkdir()) throw IOException("cannot create $tmp")
+    val tmp = generateSequence { File(dir, restoreTempDirName()) }.take(5).firstOrNull { it.mkdir() }
+        ?: throw IOException("cannot create a temp folder in $dir")
     try {
         fill(tmp)
         if (target.exists()) return false

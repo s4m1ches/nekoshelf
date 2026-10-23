@@ -239,6 +239,53 @@ class RestorePlanTest {
         assertEquals(setOf("metadata.epub.lua", "metadata.epub.lua.old"), File(home, sdr).list()!!.toSet())
     }
 
+    @Test fun oneFailingSdrDoesNotBlockTheOthers() {
+        val zip = liveReaderAndSnapshot()
+        File(home, book).delete()
+        File(home, sdr).deleteRecursively()
+        File(home, "Other.sdr").deleteRecursively()
+        val plan = planRestore(zip, ko, home)
+        assertEquals(2, plan.sdr)
+        assertEquals(1, plan.books)
+        // "Other.sdr" (restored first) is broken in this snapshot; the long-titled one is fine.
+        val broken = zipOf(
+            "broken.zip",
+            "books/$sdr/metadata.epub.lua" to "progress 42%",
+            "books/$sdr/metadata.epub.lua.old" to "progress 41%",
+            "books-manifest.json" to "[]",
+        )
+
+        val e = assertThrows(RestoreFailedException::class.java) {
+            applyRestore(broken, plan) { _, dest -> dest.writeText("book-bytes") }
+        }
+
+        assertEquals(1, e.failed)
+        assertFalse(File(home, "Other.sdr").exists())
+        assertEquals("progress 42%", File(home, "$sdr/metadata.epub.lua").readText())
+        assertEquals("book-bytes", File(home, book).readText())
+        assertEquals(setOf("Other.epub", File(book).parent), home.list()!!.toSet()) // no temp left behind
+    }
+
+    @Test fun longCyrillicSdrNameRestoresAndTempNameIsBounded() {
+        ko = tmp.newFolder("koreader")
+        home = tmp.newFolder("Books")
+        val title = "Реинкарнация безработного - Том 06 - Детство - Арка Возвращение домой - Дополнительная глава. Часть вторая"
+            .padEnd(120, 'я')
+        assertEquals(120, title.length)
+        file(home, "$title.epub", "b")
+        file(home, "$title.sdr/metadata.epub.lua", "progress")
+        val zip = File(tmp.root, "snap.zip").also { KoreaderSnapshot.build(ko, home, it) }
+        File(home, "$title.sdr").deleteRecursively()
+
+        applyRestore(zip, planRestore(zip, ko, home), noDownload)
+
+        assertEquals("progress", File(home, "$title.sdr/metadata.epub.lua").readText())
+        // The temp folder name never carries the title (2 bytes/char on the reader's ext4/f2fs).
+        val names = List(3) { restoreTempDirName() }
+        assertTrue(names.all { it.startsWith(".restore-") && it.endsWith(".tmp") && it.toByteArray().size <= 40 })
+        assertEquals(3, names.toSet().size)
+    }
+
     @Test fun shortDownloadIsNotPlacedAndBookIsOfferedAgain() {
         val zip = liveReaderAndSnapshot()
         File(home, book).delete()
