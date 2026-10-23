@@ -15,6 +15,7 @@ import app.meebook.launcher.data.manga.MangaCovers
 import app.meebook.launcher.domain.Book
 import app.meebook.launcher.domain.DayStat
 import app.meebook.launcher.domain.Manga
+import app.meebook.launcher.domain.ReadSpeed
 import app.meebook.launcher.domain.ShelfBuilder
 import app.meebook.launcher.domain.secondsLeft
 import app.meebook.launcher.domain.StatsCalc
@@ -79,6 +80,8 @@ data class HomeData(
 class HomeLoader(
     context: Context,
     private val koreaderRoot: File = File(Environment.getExternalStorageDirectory(), "koreader"),
+    /** KOReader per-book reading speeds; replaceable in tests. */
+    private val readSpeeds: (db: File, cacheDir: File) -> Map<String, ReadSpeed> = KoreaderStats::speeds,
     /** KOReader stats reader; replaceable in tests. */
     private val readStats: (db: File, zone: ZoneId, cacheDir: File) -> List<DayStat> = KoreaderStats::daily,
 ) {
@@ -89,6 +92,8 @@ class HomeLoader(
     private val mangaCovers = MangaCovers(cacheDir) { bridge.cover(it) }
     /** Last KOReader stats read, keyed on the DB files' size + mtime (and the zone). Under [LOCK]. */
     private var statsMemo: Pair<List<Any>, List<DayStat>>? = null
+    /** Last per-book speeds read, same key as [statsMemo]. Under [LOCK]. */
+    private var speedsMemo: Pair<List<Any>, Map<String, ReadSpeed>>? = null
 
     /** The last manga phase, shown again in the next books phase until the new one lands. Under [LOCK]. */
     private var lastManga: MangaPart? = null
@@ -154,13 +159,13 @@ class HomeLoader(
         (books.filter { ShelfBuilder.isInProgress(it) } + listOfNotNull(nowBook)).distinct().forEach { b ->
             bookCovers.cover(b.file)?.let { covers[b.file] = it }
         }
-        return BooksPart(books, bookDays, bookDb.isFile, nowBook, covers, today, nowMs, secondsLeft(nowBook, bookDb))
+        return BooksPart(books, bookDays, bookDb.isFile, nowBook, covers, today, nowMs, nowBookSecondsLeft(nowBook, bookDb))
     }
 
-    private fun secondsLeft(nowBook: Book?, db: File): Long? {
+    private fun nowBookSecondsLeft(nowBook: Book?, db: File): Long? {
         if (nowBook == null || nowBook.status == "complete") return null
         val state = Sidecar.read(nowBook.file) ?: return null
-        val speeds = KoreaderStats.speeds(db, cacheDir)
+        val speeds = bookSpeeds(db)
         return secondsLeft(state.pages, state.percent, state.md5?.let { speeds[it] }, speeds.values)
     }
 
@@ -211,10 +216,20 @@ class HomeLoader(
      * -wal changed since the last load: most returns to home follow no reading at all.
      */
     private fun bookDays(db: File, zone: ZoneId): List<DayStat> {
-        val key = listOf<Any>(zone) + listOf("", "-wal").flatMap { File(db.path + it).let { f -> listOf(f.length(), f.lastModified()) } }
+        val key = statsKey(db, zone)
         statsMemo?.let { (k, days) -> if (k == key) return days }
         // An empty read of an existing DB may be a transient failure: don't keep it.
         return readStats(db, zone, cacheDir).also { if (it.isNotEmpty() || !db.isFile) statsMemo = key to it }
+    }
+
+    private fun statsKey(db: File, zone: ZoneId?): List<Any> =
+        listOfNotNull<Any>(zone) + listOf("", "-wal").flatMap { File(db.path + it).let { f -> listOf(f.length(), f.lastModified()) } }
+
+    /** Per-book speeds, re-read only when the stats DB changed (like [bookDays]). */
+    private fun bookSpeeds(db: File): Map<String, ReadSpeed> {
+        val key = statsKey(db, null)
+        speedsMemo?.let { (k, v) -> if (k == key) return v }
+        return readSpeeds(db, cacheDir).also { if (it.isNotEmpty() || !db.isFile) speedsMemo = key to it }
     }
 
     companion object {

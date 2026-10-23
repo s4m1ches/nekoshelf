@@ -160,6 +160,36 @@ class HomeLoaderTest {
     }
 
     @Test
+    fun timeLeftIsComputedAndSpeedsAreReadOnlyWhenTheDbChanges() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val root = koreaderRoot(pages = 5)
+        val books = tmp.newFolder("Books")
+        File(root, "settings.reader.lua").writeText("""return { ["home_dir"] = "${books.path.replace("\\", "/")}" }""")
+        val book = File(books, "a.epub").apply { writeText("x") }
+        val sdr = File(books, "a.sdr").apply { mkdirs() }
+        File(sdr, "metadata.epub.lua").writeText(
+            """return { ["partial_md5_checksum"] = "abc", ["doc_pages"] = 200, ["percent_finished"] = 0.5, ["summary"] = { ["status"] = "reading" } }"""
+        )
+        File(root, "history.lua").writeText("""return { [1] = { ["time"] = 100, ["file"] = "${book.path.replace("\\", "/")}" } }""")
+        val dbFile = File(root, "settings/statistics.sqlite3")
+        SQLiteDatabase.openDatabase(dbFile.path, null, SQLiteDatabase.OPEN_READWRITE).use {
+            it.execSQL("CREATE TABLE book (id integer PRIMARY KEY, md5 text, total_read_time integer, total_read_pages integer)")
+            it.execSQL("INSERT INTO book VALUES (1, 'abc', 600, 20)")
+        }
+        val reads = AtomicInteger(0)
+        val loader = HomeLoader(context, root, readSpeeds = { db, cache -> reads.incrementAndGet(); KoreaderStats.speeds(db, cache) })
+        assertEquals(100L * 30, loader.load().nowBookSecondsLeft)
+        assertEquals(100L * 30, loader.load().nowBookSecondsLeft)
+        assertEquals(1, reads.get())
+        SQLiteDatabase.openDatabase(dbFile.path, null, SQLiteDatabase.OPEN_READWRITE).use {
+            it.execSQL("UPDATE book SET total_read_time = 1200 WHERE id = 1")
+        }
+        dbFile.setLastModified(dbFile.lastModified() + 2_000)
+        assertEquals(100L * 60, loader.load().nowBookSecondsLeft)
+        assertEquals(2, reads.get())
+    }
+
+    @Test
     fun overlappingLoadsAreSerialized() {
         // Overlapping refreshes (onStart while a cancelled load still runs on IO) would share the
         // fixed stats-copy path in cacheDir; one load could delete the other's copy mid-read.

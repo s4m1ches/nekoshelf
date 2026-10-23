@@ -11,10 +11,10 @@ private const val MIN_PAGES = 20L
 /**
  * Estimated seconds to finish a book: pages left × seconds per page. Uses the book's own speed
  * once it has at least [MIN_PAGES] read pages, else the average over [all] books (also needing
- * that many pages); null without enough data.
+ * that many pages); null without enough data or when nothing is left.
  */
 fun secondsLeft(pages: Int?, percent: Double?, book: ReadSpeed?, all: Collection<ReadSpeed>): Long? {
-    if (pages == null || percent == null) return null
+    if (pages == null || percent == null || pages <= 0) return null
     val speed = book?.takeIf { it.pages >= MIN_PAGES && it.seconds > 0 } ?: run {
         val valid = all.filter { it.pages > 0 }
         val p = valid.sumOf { it.pages }
@@ -22,6 +22,7 @@ fun secondsLeft(pages: Int?, percent: Double?, book: ReadSpeed?, all: Collection
         if (p >= MIN_PAGES && s > 0) ReadSpeed(s, p) else null
     } ?: return null
     val left = (pages * (1 - percent.coerceIn(0.0, 1.0))).roundToLong()
+    if (left <= 0) return null
     return left * speed.seconds / speed.pages
 }
 

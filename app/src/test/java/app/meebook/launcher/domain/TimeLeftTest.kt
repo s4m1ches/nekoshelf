@@ -22,4 +22,18 @@ class TimeLeftTest {
         assertEquals("~1 ч", formatLeft(58 * 60)); assertEquals("~2 ч 40 мин", formatLeft(2 * 3600 + 38 * 60))
         assertEquals("~12 ч", formatLeft(12 * 3600 + 20 * 60))
     }
+
+    @Test fun nothingLeftMeansNull() {
+        assertNull(secondsLeft(200, 1.0, ReadSpeed(600, 20), emptyList()))
+        assertNull(secondsLeft(200, 1.2, ReadSpeed(600, 20), emptyList()))
+        assertNull(secondsLeft(0, 0.5, ReadSpeed(600, 20), emptyList()))
+    }
+
+    @Test fun fallbackUnderTwentyPagesIsNull() =
+        assertNull(secondsLeft(200, 0.5, null, listOf(ReadSpeed(100, 10), ReadSpeed(100, 9), ReadSpeed(50, 0))))
+
+    @Test fun bookWithoutSecondsFallsBackToAllBooks() =
+        assertEquals(100L * 30, secondsLeft(200, 0.5, ReadSpeed(0, 50), listOf(ReadSpeed(600, 20), ReadSpeed(2400, 80))))
+
+    @Test fun formattingNearTenHours() = assertEquals("~10 ч", formatLeft(9 * 3600 + 58 * 60))
 }
