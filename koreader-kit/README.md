@@ -1,6 +1,6 @@
 # Nekoshelf KOReader Kit
 
-Набор настроек KOReader, с которым Nekoshelf Launcher проверялся на Meebook E6 (Android 11, e-ink).
+Набор настроек KOReader, с которым Nekoshelf Launcher проверялся на Meebook E6 (e-ink, Android 11).
 *English: the configs and ornament pack I use with KOReader on the Meebook E6. Plugins themselves are not included.*
 
 ## Что внутри

@@ -1,6 +1,6 @@
 # Nekoshelf Launcher
 
-Лаунчер для Android e-ink ридеров: полка книг KOReader, статистика, «Сейчас читаю», мост к манга-приложению и бэкап в Google Drive. Сделан под Meebook E6 (Android 11), но не привязан к нему.
+Лаунчер для Android e-ink ридеров: полка книг KOReader, статистика, «Сейчас читаю», мост к манга-приложению и бэкап в Google Drive. Сделан под Meebook E6, но не привязан к нему.
 
 *English summary: an Android launcher for e-ink readers, built around KOReader. It has a bookshelf, reading statistics, "now reading", a bridge to the Nekoshelf Manga app, an e-ink-friendly UI, Google Drive backup/restore and optional catgirl decor. Tested on the Meebook E6. Apache-2.0. Not affiliated with Meebook.*
 
@@ -18,7 +18,7 @@
 
 ## Требования
 
-- Android 11, e-ink ридер (проверено на Meebook E6).
+- Android 9+ (minSdk 28), e-ink ридер. Проверено на Android 11, ридер Meebook E6.
 - [KOReader](https://koreader.rocks/).
 - Для раздела «Манга»: [Nekoshelf Manga](https://github.com/s4m1ches/nekoshelf-manga).
 

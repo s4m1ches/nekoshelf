@@ -53,7 +53,10 @@ function Invoke-Adb {
 
 Invoke-Adb get-state | Out-Null
 $root = '/sdcard/koreader'
-Invoke-Adb shell "test -d $root" 2>$null
+& $Adb @adbArgs shell "test -d $root"
+if ($LASTEXITCODE -ne 0) {
+    throw "$root not found on the device. Start KOReader once first so it creates its folder, then run this script again."
+}
 Write-Host "Target: $root (KOReader must have been started once on the device)"
 
 Write-Host "-> patches/"
