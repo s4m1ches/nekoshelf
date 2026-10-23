@@ -18,6 +18,9 @@ class MangaCovers(
     private val dir = File(cacheDir, "manga_covers")
 
     fun cover(mangaId: Long, coverVersion: Long): File? {
+        // Contract: cover_version 0 means «Манга» has no cover — don't ask (each ask that finds
+        // nothing costs the bridge's 300 ms retry).
+        if (coverVersion == 0L) return null
         val key = "${mangaId}_$coverVersion"
         val out = File(dir, "$key.img")
         if (out.isFile && out.length() > 0) return out

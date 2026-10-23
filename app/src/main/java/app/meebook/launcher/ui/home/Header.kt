@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -73,8 +74,16 @@ import java.util.Locale
 
 /** Header height as a share of the screen height. */
 private const val HEADER_SHARE = 0.25f
-/** Share of the header height above the picture frame — the catgirl's "stage". */
-private const val STAGE_SHARE = 0.27f
+/**
+ * Share of the header height above the picture frame — the catgirl's "stage". Task 8 had 0.27;
+ * the owner asked for the figure ~10% larger, still standing in the strip (fix round 1 of
+ * Task 9, reversing R11's overlap), so the strip grew to 0.30 (≈ +4.5 dp, taken from the picture).
+ */
+private const val STAGE_SHARE = 0.30f
+/** Max decor width as a share of the header width (spec: ≤ 18%). */
+private const val DECOR_MAX_SHARE = 0.18f
+/** Horizontal centre of the decor — between the clock block and the toggles. */
+private const val DECOR_CENTER = 0.60f
 
 private val FallbackGrey = Color(0xFFEEEEEE)
 private val RU = Locale.forLanguageTag("ru")
@@ -86,7 +95,7 @@ private val DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM", RU)
  * outlined rounded frame (flat grey band if null or undecodable), the clock and the
  * Russian date top-left, three round toggles top-right (Wi‑Fi, frontlight, full
  * refresh; filled = on; long-press opens the system screen) with the battery % under
- * them, and the [decor] catgirl sitting on the frame's top edge (see [decorPlacement]).
+ * them, and the [decor] catgirl standing in the strip above the frame, on its top edge.
  * [onPictureSettled] fires once the picture has been drawn or has failed to load.
  *
  * The clock ticks once a minute while the screen is started; toggle states and battery
@@ -182,7 +191,6 @@ internal fun HeaderContent(
     modifier: Modifier = Modifier,
     onPictureSettled: () -> Unit = {},
 ) {
-    val context = LocalContext.current
     val headerHeight = LocalConfiguration.current.screenHeightDp.dp * HEADER_SHARE
     val stage = headerHeight * STAGE_SHARE
     val frameShape = RoundedCornerShape(14.dp)
@@ -230,11 +238,13 @@ internal fun HeaderContent(
                 }
             }
         }
-        // R11: drawn after the frame, so the figure overlaps the frame's top edge and the picture.
-        val aspect = remember(decor) { if (decor.isEmpty()) 0f else catgirlAspect(context.assets, decor) }
+        val decorWidth = width * DECOR_MAX_SHARE
         CatgirlDecor(
             decor = decor,
-            placement = decorPlacement(width, stage, headerHeight - stage - 4.dp, aspect),
+            // +border: the feet / seat rest on the frame line rather than float above it.
+            height = stage + border,
+            maxWidth = decorWidth,
+            modifier = Modifier.offset(x = width * DECOR_CENTER - decorWidth / 2),
         )
     }
 }

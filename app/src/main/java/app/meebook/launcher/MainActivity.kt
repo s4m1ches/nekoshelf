@@ -24,6 +24,7 @@ import app.meebook.launcher.data.HomeLoader
 import app.meebook.launcher.device.Eink
 import app.meebook.launcher.device.HeaderPictures
 import app.meebook.launcher.device.Launch
+import app.meebook.launcher.device.StorageAccess
 import app.meebook.launcher.device.Toggles
 import app.meebook.launcher.domain.Book
 import app.meebook.launcher.domain.Manga
@@ -96,7 +97,7 @@ class MainActivity : ComponentActivity(), HomeActions {
         state.needsPermission = !hasStorage()
         if (state.needsPermission && !autoAsked) {
             autoAsked = true
-            requestStorage()
+            askStorage(fromCard = false)
         }
         refresh(newPicture = true, fullRefresh = true)
     }
@@ -177,16 +178,25 @@ class MainActivity : ComponentActivity(), HomeActions {
     private fun hasStorage(): Boolean =
         checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
 
-    override fun requestStorage() {
-        val askedBefore = prefs.getBoolean(PREF_ASKED, false)
-        val deniedForGood = askedBefore && !shouldShowRequestPermissionRationale(Manifest.permission.READ_EXTERNAL_STORAGE)
-        if (deniedForGood) {
-            startActivity(
+    /** The card's «Разрешить» button. */
+    override fun requestStorage() = askStorage(fromCard = true)
+
+    /** Automatic asks never leave home; only the card may open the app's settings page. */
+    private fun askStorage(fromCard: Boolean) {
+        val action = StorageAccess.decide(
+            fromCard = fromCard,
+            askedBefore = prefs.getBoolean(PREF_ASKED, false),
+            rationale = shouldShowRequestPermissionRationale(Manifest.permission.READ_EXTERNAL_STORAGE),
+        )
+        when (action) {
+            StorageAccess.Action.REQUEST -> storageRequest.launch(
+                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE),
+            )
+            StorageAccess.Action.SETTINGS -> startActivity(
                 Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
-        } else {
-            storageRequest.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+            StorageAccess.Action.NONE -> Unit // the card stays on screen
         }
     }
 

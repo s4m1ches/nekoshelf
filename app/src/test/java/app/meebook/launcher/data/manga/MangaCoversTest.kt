@@ -63,4 +63,13 @@ class MangaCoversTest {
         assertNull(covers().cover(3, 1))
         assertEquals(listOf(3L), calls)
     }
+
+    @Test
+    fun coverVersionZeroMeansNoCoverAndIsNeverFetched() {
+        // Contract: cover_version 0 = no cover. Asking anyway costs the bridge's 300 ms retry.
+        assertNull(covers().cover(8, 0))
+        assertNull(covers().cover(8, 0))
+        assertEquals(emptyList<Long>(), calls)
+        assertEquals(false, File(tmp.root, "manga_covers/8_0.miss").exists())
+    }
 }

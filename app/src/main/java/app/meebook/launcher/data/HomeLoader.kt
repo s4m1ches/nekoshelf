@@ -55,10 +55,16 @@ data class HomeData(
  * Reads KOReader's files, the book folder and the «Манга» bridge into a [HomeData]. Blocking:
  * call on Dispatchers.IO, once per refresh (the stats DB is copied on every call). Each source
  * degrades to empty on its own: missing KOReader data never hides manga and vice versa.
+ *
+ * Loads are serialized process-wide: a cancelled refresh's load keeps running on IO while the
+ * next one starts, and both would share the fixed stats-copy file in cacheDir (and the cover
+ * cache files) — one could delete the other's copy mid-read and come back empty.
  */
 class HomeLoader(
     context: Context,
     private val koreaderRoot: File = File(Environment.getExternalStorageDirectory(), "koreader"),
+    /** KOReader stats reader; replaceable in tests. */
+    private val readStats: (db: File, zone: ZoneId, cacheDir: File) -> List<DayStat> = KoreaderStats::daily,
 ) {
     private val appContext = context.applicationContext ?: context
     private val cacheDir = appContext.cacheDir
@@ -66,7 +72,9 @@ class HomeLoader(
     private val bookCovers = BookCovers(File(cacheDir, "covers"), COVER_PX)
     private val mangaCovers = MangaCovers(cacheDir) { bridge.cover(it) }
 
-    fun load(): HomeData {
+    fun load(): HomeData = synchronized(LOCK) { loadLocked() }
+
+    private fun loadLocked(): HomeData {
         val t0 = SystemClock.elapsedRealtime()
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
@@ -78,7 +86,7 @@ class HomeLoader(
             Book.from(bf, Sidecar.read(bf.file), opened[bf.file.absolutePath])
         }
         val bookDb = File(koreaderRoot, "settings/statistics.sqlite3")
-        val bookDays = KoreaderStats.daily(bookDb, zone, cacheDir)
+        val bookDays = readStats(bookDb, zone, cacheDir)
         val t1 = SystemClock.elapsedRealtime()
 
         // available() first: without «Манга» every bridge call would cost a 300 ms retry.
@@ -129,6 +137,7 @@ class HomeLoader(
 
     companion object {
         private const val TAG = "HomeLoader"
+        private val LOCK = Any()
         /** Cover extraction height in px: about the «Сейчас читаю» cover at density 2; shelf covers are smaller. */
         const val COVER_PX = 240
     }
