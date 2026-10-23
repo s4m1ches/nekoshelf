@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "MeebookLauncher"
+rootProject.name = "Nekoshelf"
 include(":app")

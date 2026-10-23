@@ -109,7 +109,7 @@
     <!-- About (long-press on the clock) -->
     <string name="about_title">О приложении</string>
     <string name="about_app">Лаунчер, версия %1$s</string>
-    <string name="about_purpose">Домашний экран для Meebook E6. Для личного пользования.</string>
+    <string name="about_purpose">Домашний экран для e-ink читалок на Android (Meebook E6).</string>
     <string name="about_font_title">Шрифт</string>
     <string name="about_font">Literata — SIL Open Font License 1.1 (полный текст лицензии лежит в приложении: assets/licenses/literata-OFL.txt).</string>
 

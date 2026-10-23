@@ -1,20 +1,24 @@
 # Настройка Google Drive для бэкапа
 
-Делается один раз, с компьютера. Нужен обычный аккаунт Google (тот, в который пойдёт бэкап).
+Делается один раз, с компьютера. Нужен обычный аккаунт Google (тот, в который пойдёт бэкап). Свою сборку вы подписываете своим ключом, поэтому свой OAuth-клиент нужен каждому, кто собирает приложение сам.
 
-1. Откройте https://console.cloud.google.com и создайте проект, например «Meebook Launcher».
+1. Откройте https://console.cloud.google.com и создайте проект, например «Nekoshelf».
 2. **APIs & Services → Library** → найдите «Google Drive API» → **Enable**.
 3. Экран согласия OAuth (в новой консоли: **Google Auth Platform**):
    - Тип аудитории: **External**.
-   - Название приложения: «Meebook Launcher»; email поддержки и email разработчика — ваш собственный.
+   - Название приложения: «Nekoshelf»; email поддержки и email разработчика — ваш собственный.
    - **Data access / Scopes**: добавьте `https://www.googleapis.com/auth/drive.file` (не чувствительный доступ: только файлы, созданные самим приложением).
    - **Audience**: нажмите «Опубликовать приложение» (**Publish to production**). Это важно: в режиме «Testing» доступ сгорает через 7 дней. Проверка Google для `drive.file` не требуется.
 4. **Clients → Create client**:
    - Application type: **Android**.
-   - Package name: `app.meebook.launcher`.
-   - SHA-1: `<your SHA-1>`
+   - Package name: `app.nekoshelf.launcher`.
+   - SHA-1: отпечаток **вашего** ключа подписи. Соберите APK (своим ключом или отладочным) и выполните
+     `apksigner verify --print-certs app-debug.apk` (`apksigner` лежит в `build-tools` Android SDK) —
+     нужна строка «certificate SHA-1 digest». Для отладочного ключа можно также
+     `keytool -list -v -keystore ~/.android/debug.keystore -storepass android` (на Windows `%USERPROFILE%\.android\debug.keystore`).
+     Клиент работает только с APK, подписанным тем же ключом.
 5. На ридере: свайп вверх → «☁ Бэкап» → «Войти в Google» → выберите аккаунт → разрешите доступ.
-6. Дальше всё само: первый бэкап пройдёт при ближайшем пробуждении, если заряд больше 70 % или ридер на зарядке; можно нажать «Сделать сейчас». Файлы появятся в Google Drive в папке «Meebook».
+6. Дальше всё само: первый бэкап пройдёт при ближайшем пробуждении, если заряд больше 70 % или ридер на зарядке; можно нажать «Сделать сейчас». Файлы появятся в Google Drive в папке «Nekoshelf».
 
 ## Если не получилось
 

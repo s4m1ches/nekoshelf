@@ -7,16 +7,19 @@ plugins {
 }
 
 val keystoreProps = Properties().apply {
-    val f = file("<keystore.properties>")
-    if (f.exists()) f.inputStream().use { load(it) }
+    // Path comes from -PNEKOSHELF_KEYSTORE_PROPERTIES or the env var of the same name.
+    val path = (findProperty("NEKOSHELF_KEYSTORE_PROPERTIES") as String?)
+        ?: System.getenv("NEKOSHELF_KEYSTORE_PROPERTIES")
+    val f = path?.let { file(it) }
+    if (f != null && f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
-    namespace = "app.meebook.launcher"
+    namespace = "app.nekoshelf.launcher"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "app.meebook.launcher"
+        applicationId = "app.nekoshelf.launcher"
         minSdk = 28
         targetSdk = 28
         versionCode = 3
@@ -24,7 +27,7 @@ android {
     }
 
     signingConfigs {
-        create("meebook") {
+        create("nekoshelf") {
             if (keystoreProps.isNotEmpty()) {
                 storeFile = file(keystoreProps.getProperty("storeFile"))
                 storePassword = keystoreProps.getProperty("storePassword")
@@ -35,9 +38,11 @@ android {
     }
 
     buildTypes {
-        debug { signingConfig = signingConfigs.getByName("meebook") }
+        // Without a keystore the default debug key is used, so anyone can build.
+        debug { if (keystoreProps.isNotEmpty()) signingConfig = signingConfigs.getByName("nekoshelf") }
         release {
-            signingConfig = signingConfigs.getByName("meebook")
+            signingConfig = if (keystoreProps.isNotEmpty()) signingConfigs.getByName("nekoshelf")
+            else signingConfigs.getByName("debug")
             isMinifyEnabled = false
         }
     }

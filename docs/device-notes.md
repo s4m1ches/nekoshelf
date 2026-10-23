@@ -2,16 +2,16 @@
 
 Facts about the target device (Meebook E6, Haoqing firmware, RK3566, Android 11,
 1072×1448 @ 320 dpi, greyscale e-ink) that the launcher code depends on. Checked on
-the owner's device on 2026-10-23.
+a test device on 2026-10-23.
 
 ## Frontlight
 
-- `Settings.System.SCREEN_BRIGHTNESS` drives the frontlight. Owner confirmed by eye:
+- `Settings.System.SCREEN_BRIGHTNESS` drives the frontlight. Confirmed by eye:
   `adb shell settings put system screen_brightness 60` turns it on, `0` turns it off.
   `screen_brightness_mode` is `0` (manual).
 - The launcher's light toggle (`device/Toggles.kt`) switches between 0 and the last
   non-zero level (kept in prefs `toggles/light_level`, default 60). "On" = brightness > 0.
-- Writing it needs `WRITE_SETTINGS`, a special app access: the owner grants it once in
+- Writing it needs `WRITE_SETTINGS`, a special app access: the user grants it once in
   «Изменение системных настроек» → «Разрешить изменение системных настроек». Until then
   a tap on the light icon opens that screen instead of failing.
 - The firmware also has its own keys — `isLightOn`, `key_cold_value`,
@@ -29,7 +29,7 @@ the owner's device on 2026-10-23.
 
 - The app targets API 28 on purpose so `WifiManager.setWifiEnabled` still works on
   Android 11.
-- The owner has turned **airplane mode off** (2026-10-23), so the Wi‑Fi icon is a true
+- Airplane mode was turned **off** (2026-10-23), so the Wi‑Fi icon is a true
   one-tap on/off toggle — confirmed on the device. Long-press opens
   `Settings.ACTION_WIFI_SETTINGS`.
 - **Airplane mode blocks it.** If airplane mode is ever turned on again, Android 11 refuses
@@ -39,7 +39,7 @@ the owner's device on 2026-10-23.
 - To follow the state, the header listens to `WIFI_STATE_CHANGED`. Register it
   **exported**: below API 33 `ContextCompat.RECEIVER_NOT_EXPORTED` guards the receiver
   with an app-private permission, and the system broadcast is then denied
-  (`Permission Denial … requires app.meebook.launcher.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`).
+  (`Permission Denial … requires app.nekoshelf.launcher.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`).
 
 ## E-ink full refresh
 
@@ -72,11 +72,11 @@ the owner's device on 2026-10-23.
 - HOME candidates on this firmware (`adb shell cmd package query-activities --brief -a
   android.intent.action.MAIN -c android.intent.category.HOME`, checked 2026-10-23):
   `com.haoqing.app.hqreader/.view.activity.LauncherActivity` (the stock home),
-  `app.meebook.launcher/.MainActivity` and `com.android.settings/.FallbackHome`. The stock
+  `app.nekoshelf.launcher/.MainActivity` and `com.android.settings/.FallbackHome`. The stock
   home's HOME entry point is `LauncherActivity`; `LauncherMainActivity` is its main screen
   (not a HOME activity — it does not take part in the home choice).
-- To make «Лаунчер» the home: press HOME and pick «Лаунчер» → «Всегда» (owner step), or
-  `adb shell cmd package set-home-activity app.meebook.launcher/.MainActivity`.
+- To make «Лаунчер» the home: press HOME and pick «Лаунчер» → «Всегда» (user step), or
+  `adb shell cmd package set-home-activity app.nekoshelf.launcher/.MainActivity`.
 - **To go back to the stock home:**
   - `adb shell cmd package set-home-activity com.haoqing.app.hqreader/.view.activity.LauncherActivity`
   - or on the device: Настройки → Приложения → Приложения по умолчанию → «Главный экран» →
@@ -102,4 +102,4 @@ the owner's device on 2026-10-23.
 
 ## Бэкап на Google Drive
 
-- Раз в сутки при пробуждении, если заряд больше 70 % или ридер на зарядке; Wi-Fi сам никогда не включается. Сохраняются в папку «Meebook» на Drive: `koreader` и `manga` (настройки и данные, 14 дневных снимков), `books/...` (сами книги, никогда не удаляются). Восстановление только докладывает то, чего не хватает, и ничего не перезаписывает.
+- Раз в сутки при пробуждении, если заряд больше 70 % или ридер на зарядке; Wi-Fi сам никогда не включается. Сохраняются в папку «Nekoshelf» на Drive: `koreader` и `manga` (настройки и данные, 14 дневных снимков), `books/...` (сами книги, никогда не удаляются). Восстановление только докладывает то, чего не хватает, и ничего не перезаписывает.

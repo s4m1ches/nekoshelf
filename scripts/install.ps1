@@ -1,4 +1,4 @@
-# Builds the debug APK, installs it on the connected Meebook and sets the e-ink refresh row.
+# Builds the debug APK, installs it on the connected reader and sets the e-ink refresh row.
 # -AdbPath / -SkipBuild exist so the argument quoting can be tested offline with a stand-in exe.
 [CmdletBinding()]
 param(
@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-$pkg = 'app.meebook.launcher'
+$pkg = 'app.nekoshelf.launcher'
 $uri = 'content://com.android.systemui.eink/einksettings'
 
 # The device command is passed to `adb shell` as ONE argument containing no double quotes
