@@ -12,6 +12,8 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import java.time.Instant
 import java.time.ZoneId
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * When a backup is started. Never on a timer: only a wake (screen on / unlock / boot / the home
@@ -24,16 +26,29 @@ object BackupTrigger {
     const val TAG_AUTO = "auto"
     const val TAG_MANUAL = "manual"
 
+    /** Single background thread for the wake check (prefs read, sticky intent, enqueue); tests swap in an immediate one. */
+    internal var executor: Executor = Executors.newSingleThreadExecutor()
+    internal var clock: () -> Long = System::currentTimeMillis
+    internal var zone: () -> ZoneId = ZoneId::systemDefault
+
     /**
-     * Cheap and safe to call often: one prefs read + one sticky intent, then at most an enqueue.
-     * KEEP leaves a run that is already queued or running alone.
+     * Cheap and safe to call often (returns at once; the check runs on a background thread): one prefs
+     * read + one sticky intent, then at most an enqueue. KEEP leaves a run that is already queued or
+     * running alone. A queued auto run may start later, when the network appears; the runner re-checks
+     * nothing but the status, which is intended. After an auth failure auto runs wait for a new sign-in
+     * ([BackupStore.signedIn] clears the error).
      */
     fun onWake(context: Context) {
         val app = context.applicationContext
+        executor.execute { wake(app) }
+    }
+
+    private fun wake(app: Context) {
         val status = BackupStore(app).load()
-        val zone = ZoneId.systemDefault()
-        val today = Instant.ofEpochMilli(System.currentTimeMillis()).atZone(zone).toLocalDate()
-        if (!shouldRunAuto(status, today, readPower(app), zone)) return
+        if (status.lastError == BACKUP_ERROR_AUTH) return
+        val z = zone()
+        val today = Instant.ofEpochMilli(clock()).atZone(z).toLocalDate()
+        if (!shouldRunAuto(status, today, readPower(app), z)) return
         enqueue(app, manual = false, ExistingWorkPolicy.KEEP)
     }
 

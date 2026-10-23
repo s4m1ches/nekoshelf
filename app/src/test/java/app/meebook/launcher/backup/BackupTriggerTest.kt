@@ -13,6 +13,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.ZoneId
+import java.util.concurrent.Executor
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
@@ -23,6 +25,9 @@ class BackupTriggerTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        BackupTrigger.executor = Executor { it.run() }
+        BackupTrigger.zone = { ZoneId.of("UTC") }
+        BackupTrigger.clock = { NOON }
         WorkManagerTestInitHelper.initializeTestWorkManager(context, Configuration.Builder().build())
         store = BackupStore(context)
         store.save(BackupStatus.EMPTY)
@@ -90,7 +95,7 @@ class BackupTriggerTest {
 
     @Test
     fun alreadyDoneTodayDoesNothing() {
-        store.update { it.copy(lastSuccessAt = System.currentTimeMillis()) }
+        store.update { it.copy(lastSuccessAt = NOON - 3_600_000L) }
         BackupTrigger.onWake(context)
         assertTrue(work().isEmpty())
     }
@@ -100,5 +105,30 @@ class BackupTriggerTest {
         store.signedOut()
         BackupTrigger.onWake(context)
         assertTrue(work().isEmpty())
+    }
+
+    @Test
+    fun authFailureStopsAutoRunsUntilSignIn() {
+        store.update { it.copy(lastFailureAt = 1L, lastError = BACKUP_ERROR_AUTH) }
+        BackupTrigger.onWake(context)
+        assertTrue(work().isEmpty())
+        store.signedIn("a@b.c", NOON)
+        BackupTrigger.onWake(context)
+        assertEquals(1, work().size)
+    }
+
+    @Test
+    fun wakeDoesItsWorkOnTheExecutor() {
+        val queued = ArrayList<Runnable>()
+        BackupTrigger.executor = Executor { queued += it }
+        BackupTrigger.onWake(context)
+        assertTrue(work().isEmpty())
+        queued.forEach { it.run() }
+        assertEquals(1, work().size)
+    }
+
+    private companion object {
+        /** 2026-10-23 12:00 UTC. */
+        const val NOON = 1_792_756_800_000L
     }
 }

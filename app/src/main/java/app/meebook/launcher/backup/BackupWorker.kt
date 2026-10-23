@@ -9,6 +9,7 @@ import app.meebook.launcher.backup.drive.DriveRest
 import app.meebook.launcher.backup.drive.GoogleAuth
 import app.meebook.launcher.data.koreader.KoreaderPaths
 import app.meebook.launcher.data.manga.MangaBridge
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -24,24 +25,41 @@ class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val app = applicationContext
         val manual = inputData.getBoolean(BackupTrigger.KEY_MANUAL, false)
         val store = BackupStore(app)
-        val auth = GoogleAuth(app)
-        if (auth.silentToken() == null) {
-            val now = System.currentTimeMillis()
-            store.update { it.copy(lastFailureAt = now, lastError = BACKUP_ERROR_AUTH) }
-            return@withContext Result.success()
+        try {
+            val token = tokenSource(app)
+            if (token() == null) {
+                fail(store, BACKUP_ERROR_AUTH)
+            } else {
+                runnerFactory(app, store, token).run(BackupTrigger.readPower(app), manual)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            fail(store, backupErrorText(e))
         }
-        val root = File(Environment.getExternalStorageDirectory(), "koreader")
-        val runner = BackupRunner(
-            drive = DriveRest(token = { auth.silentToken() ?: throw DriveAuthException("token unavailable") }),
-            store = store,
-            koreaderRoot = root,
-            homeDir = { KoreaderPaths(root).homeDir() },
-            mangaBackup = { MangaBridge(app).backup() },
-            cacheDir = app.cacheDir,
-            clock = System::currentTimeMillis,
-            zone = ZoneId.systemDefault(),
-        )
-        runner.run(BackupTrigger.readPower(app), manual)
         Result.success()
+    }
+
+    private fun fail(store: BackupStore, text: String) {
+        val now = System.currentTimeMillis()
+        store.update { it.copy(lastFailureAt = now, lastError = text) }
+    }
+
+    internal companion object {
+        /** Test hooks: where the access token comes from, and how the runner is built. */
+        var tokenSource: (Context) -> (() -> String?) = { GoogleAuth(it)::silentToken }
+        var runnerFactory: (Context, BackupStore, () -> String?) -> BackupRunner = { app, store, token ->
+            val root = File(Environment.getExternalStorageDirectory(), "koreader")
+            BackupRunner(
+                drive = DriveRest(token = { token() ?: throw DriveAuthException("token unavailable") }),
+                store = store,
+                koreaderRoot = root,
+                homeDir = { KoreaderPaths(root).homeDir() },
+                mangaBackup = { MangaBridge(app).backup() },
+                cacheDir = app.cacheDir,
+                clock = System::currentTimeMillis,
+                zone = ZoneId.systemDefault(),
+            )
+        }
     }
 }
