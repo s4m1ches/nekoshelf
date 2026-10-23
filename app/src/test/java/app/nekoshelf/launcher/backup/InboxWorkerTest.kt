@@ -180,4 +180,29 @@ class InboxWorkerTest {
         assertFalse(store.load().inboxNeedsReauth)
         assertNotNull(store.load().inboxError)
     }
+
+    @Test
+    fun aRunThatGetsThroughClearsNeedsReauth() {
+        store.update { it.copy(inboxNeedsReauth = true, inboxError = INBOX_ERROR_NO_ACCESS) }
+        bookOnDrive()
+        runWorker(manual = true)
+        assertFalse(store.load().inboxNeedsReauth)
+        assertNull(store.load().inboxError)
+        // A non-auth failure (403) also completes without a sign-in failure.
+        store.update { it.copy(inboxNeedsReauth = true) }
+        drive.failListTree = DriveException(403, "insufficient scope")
+        runWorker(manual = true)
+        assertFalse(store.load().inboxNeedsReauth)
+    }
+
+    @Test
+    fun aPerFile401SetsNeedsReauth() {
+        val root = drive.folder("Nekoshelf", null)
+        val books = drive.folder("books", root)
+        val id = drive.put(books, "new.epub", "x".toByteArray(), mimeType = "application/epub+zip")
+        drive.failDownload[id] = DriveAuthException("401")
+        runWorker()
+        assertTrue(store.load().inboxNeedsReauth)
+        assertEquals(INBOX_ERROR_NO_ACCESS, store.load().inboxError)
+    }
 }

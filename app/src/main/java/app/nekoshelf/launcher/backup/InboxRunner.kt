@@ -111,7 +111,7 @@ class InboxRunner(
                 inboxLastCheckAt = now,
                 inboxReceived = pass.received,
                 inboxError = error,
-                inboxNeedsReauth = cur.inboxNeedsReauth || authLost,
+                inboxNeedsReauth = authLost, // a run that got through proves access is back
             )
         }
         return InboxResult(pass.received, pass.skipped, error)

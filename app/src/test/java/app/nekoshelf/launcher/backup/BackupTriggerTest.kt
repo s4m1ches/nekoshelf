@@ -229,18 +229,35 @@ class BackupTriggerTest {
     fun checkNowEnqueuesWithConnectedNetwork() {
         battery(percent = 5, charging = false)
         BackupTrigger.checkInboxNow(context)
-        val w = inboxWork()
+        val w = manualInboxWork()
         assertEquals(1, w.size)
         assertEquals(NetworkType.CONNECTED, w[0].constraints.requiredNetworkType)
         assertTrue("manual" in w[0].tags)
     }
 
+    private fun manualInboxWork(): List<WorkInfo> =
+        WorkManager.getInstance(context).getWorkInfosForUniqueWork("inbox-manual").get()
+
     @Test
-    fun checkNowDuringWakeWorkIsQueuedAfterIt() {
+    fun checkNowIsSeparateWorkFromAPendingUnmeteredWake() {
         inboxOn()
         BackupTrigger.onWake(context)
         BackupTrigger.checkInboxNow(context)
-        assertEquals(2, inboxWork().size)
+        val wake = inboxWork()
+        assertEquals(1, wake.size)
+        assertEquals(NetworkType.UNMETERED, wake[0].constraints.requiredNetworkType)
+        val manual = manualInboxWork()
+        assertEquals(1, manual.size)
+        assertEquals(NetworkType.CONNECTED, manual[0].constraints.requiredNetworkType)
+        assertTrue(inboxWork().all { it.id != manual[0].id })
+    }
+
+    @Test
+    fun checkNowTwiceKeepsOneManualJob() {
+        BackupTrigger.checkInboxNow(context)
+        BackupTrigger.checkInboxNow(context)
+        assertEquals(1, manualInboxWork().size)
+        assertTrue(inboxWork().isEmpty())
     }
 
     private companion object {

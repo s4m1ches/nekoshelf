@@ -24,6 +24,9 @@ object BackupTrigger {
     const val WORK_NAME = "backup"
     const val INBOX_WORK_NAME = "inbox"
 
+    /** The manual check is its own work, so it never waits behind a wake check that needs an unmetered network. */
+    const val INBOX_MANUAL_WORK_NAME = "inbox-manual"
+
     /** The wake enqueues an inbox check at this battery percent or more (or while charging). */
     const val INBOX_MIN_BATTERY = 15
     const val KEY_MANUAL = "manual"
@@ -76,11 +79,12 @@ object BackupTrigger {
     }
 
     /**
-     * «Проверить сейчас»: queued after any check in progress (a REPLACE would cancel a worker whose
-     * blocking I/O goes on and still holds the runner's guard), on any network.
+     * «Проверить сейчас»: its own unique work on any network. KEEP: a press while a manual check is
+     * queued or running is a no-op (a REPLACE would cancel a worker whose blocking I/O goes on and
+     * still holds the runner's guard; [InboxRunner]'s guard serialises it with a wake check).
      */
     fun checkInboxNow(context: Context) {
-        enqueueInbox(context.applicationContext, manual = true, ExistingWorkPolicy.APPEND_OR_REPLACE, NetworkType.CONNECTED)
+        enqueueInbox(context.applicationContext, manual = true, ExistingWorkPolicy.KEEP, NetworkType.CONNECTED)
     }
 
     private fun enqueueInbox(app: Context, manual: Boolean, policy: ExistingWorkPolicy, network: NetworkType) {
@@ -89,7 +93,7 @@ object BackupTrigger {
             .setInputData(workDataOf(KEY_MANUAL to manual))
             .addTag(if (manual) TAG_MANUAL else TAG_AUTO)
             .build()
-        WorkManager.getInstance(app).enqueueUniqueWork(INBOX_WORK_NAME, policy, request)
+        WorkManager.getInstance(app).enqueueUniqueWork(if (manual) INBOX_MANUAL_WORK_NAME else INBOX_WORK_NAME, policy, request)
     }
 
     /** «Сделать сейчас»: queued after any run in progress, so the press is not swallowed by it. */
