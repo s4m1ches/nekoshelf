@@ -5,4 +5,41 @@
     <string name="toggle_light">Подсветка</string>
     <string name="toggle_refresh">Полное обновление экрана</string>
     <string name="battery_percent">%1$d%%</string>
+
+    <!-- Stats -->
+    <string name="stats_books">Книги</string>
+    <string name="stats_manga">Манга</string>
+    <string name="stats_today">сегодня %1$s стр. · %2$s</string>
+    <string name="stats_total">всего %1$s стр. · %2$s</string>
+    <string name="minutes">%1$d мин</string>
+    <string name="hours">%1$d ч</string>
+    <string name="week_days">пвсчпсв</string>
+
+    <!-- «Сейчас читаю» -->
+    <string name="now_reading">Сейчас читаю</string>
+    <string name="empty_koreader">KOReader ещё не открывал книги</string>
+    <string name="empty_manga">Манга не установлена</string>
+    <string name="empty_manga_history">В «Манге» ещё ничего не читали</string>
+    <string name="book_progress">KOReader · %1$d%%</string>
+    <string name="book_done">KOReader · прочитано</string>
+    <string name="manga_progress">гл. %1$d / %2$d</string>
+
+    <!-- Shelf -->
+    <string name="tab_books">Книги</string>
+    <string name="tab_manga">Манга</string>
+    <string name="tab_all">Всё</string>
+    <string name="caught_up">всё прочитано</string>
+    <string name="pager">%1$d / %2$d</string>
+    <string name="pager_prev">Предыдущая страница</string>
+    <string name="pager_next">Следующая страница</string>
+    <string name="shelf_empty">Здесь пока пусто</string>
+
+    <!-- Storage permission (ruling R6) -->
+    <string name="perm_needed">Нужен доступ к памяти, чтобы показать книги</string>
+    <string name="perm_button">Разрешить</string>
+
+    <!-- Apps -->
+    <string name="dock_pick">Выберите приложение для дока</string>
+    <string name="all_apps">Все приложения</string>
+    <string name="close">Закрыть</string>
 </resources>

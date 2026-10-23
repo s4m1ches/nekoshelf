@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -76,10 +75,6 @@ import java.util.Locale
 private const val HEADER_SHARE = 0.25f
 /** Share of the header height above the picture frame — the catgirl's "stage". */
 private const val STAGE_SHARE = 0.27f
-/** Max decor width as a share of the header width (spec: ≤ 18%). */
-private const val DECOR_MAX_SHARE = 0.18f
-/** Horizontal centre of the decor — between the clock block and the toggles. */
-private const val DECOR_CENTER = 0.60f
 
 private val FallbackGrey = Color(0xFFEEEEEE)
 private val RU = Locale.forLanguageTag("ru")
@@ -91,7 +86,8 @@ private val DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM", RU)
  * outlined rounded frame (flat grey band if null or undecodable), the clock and the
  * Russian date top-left, three round toggles top-right (Wi‑Fi, frontlight, full
  * refresh; filled = on; long-press opens the system screen) with the battery % under
- * them, and the [decor] catgirl sitting on the frame's top edge.
+ * them, and the [decor] catgirl sitting on the frame's top edge (see [decorPlacement]).
+ * [onPictureSettled] fires once the picture has been drawn or has failed to load.
  *
  * The clock ticks once a minute while the screen is started; toggle states and battery
  * are re-read then too, and Wi‑Fi follows WIFI_STATE_CHANGED.
@@ -103,6 +99,7 @@ fun Header(
     toggles: Toggles,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    onPictureSettled: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -163,6 +160,7 @@ fun Header(
         onLightLong = toggles::openLightPanel,
         onRefresh = onRefresh,
         modifier = modifier,
+        onPictureSettled = onPictureSettled,
     )
 }
 
@@ -182,7 +180,9 @@ internal fun HeaderContent(
     onLightLong: () -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    onPictureSettled: () -> Unit = {},
 ) {
+    val context = LocalContext.current
     val headerHeight = LocalConfiguration.current.screenHeightDp.dp * HEADER_SHARE
     val stage = headerHeight * STAGE_SHARE
     val frameShape = RoundedCornerShape(14.dp)
@@ -205,7 +205,8 @@ internal fun HeaderContent(
                     picture = picture,
                     width = width,
                     height = headerHeight - stage - 4.dp,
-                    onError = { pictureShown = false },
+                    onSuccess = onPictureSettled,
+                    onError = { pictureShown = false; onPictureSettled() },
                 )
             }
             Column(Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 6.dp)) {
@@ -229,19 +230,17 @@ internal fun HeaderContent(
                 }
             }
         }
-        val decorWidth = width * DECOR_MAX_SHARE
+        // R11: drawn after the frame, so the figure overlaps the frame's top edge and the picture.
+        val aspect = remember(decor) { if (decor.isEmpty()) 0f else catgirlAspect(context.assets, decor) }
         CatgirlDecor(
             decor = decor,
-            // +border: the feet / seat rest on the frame line rather than float above it.
-            height = stage + border,
-            maxWidth = decorWidth,
-            modifier = Modifier.offset(x = width * DECOR_CENTER - decorWidth / 2),
+            placement = decorPlacement(width, stage, headerHeight - stage - 4.dp, aspect),
         )
     }
 }
 
 @Composable
-private fun HeaderPicture(picture: File, width: Dp, height: Dp, onError: () -> Unit) {
+private fun HeaderPicture(picture: File, width: Dp, height: Dp, onSuccess: () -> Unit, onError: () -> Unit) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val wPx = with(density) { width.roundToPx() }.coerceAtLeast(1)
@@ -260,6 +259,7 @@ private fun HeaderPicture(picture: File, width: Dp, height: Dp, onError: () -> U
         imageLoader = EinkImages.loader(context),
         contentScale = ContentScale.Crop,
         alignment = Alignment.Center,
+        onSuccess = { onSuccess() },
         onError = { onError() },
         modifier = Modifier.fillMaxSize(),
     )
