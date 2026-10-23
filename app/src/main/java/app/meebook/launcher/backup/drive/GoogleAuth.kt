@@ -22,7 +22,7 @@ class GoogleAuth(private val context: Context) {
         .setRequestedScopes(listOf(Scope(DRIVE_FILE)))
         .build()
 
-    private var last: AuthorizationResult? = null
+    @Volatile private var last: AuthorizationResult? = null
 
     /**
      * Returns an access token without UI, or null when the user must interact first (or Play
@@ -31,6 +31,9 @@ class GoogleAuth(private val context: Context) {
     fun silentToken(): String? = try {
         val result = Tasks.await(Identity.getAuthorizationClient(context).authorize(request), 20, TimeUnit.SECONDS)
         if (result.hasResolution()) null else result.accessToken.also { last = result }
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        null
     } catch (e: Exception) {
         null
     }
@@ -42,6 +45,9 @@ class GoogleAuth(private val context: Context) {
     fun signInIntent(activity: Activity): PendingIntent? = try {
         val result = Tasks.await(Identity.getAuthorizationClient(activity).authorize(request), 20, TimeUnit.SECONDS)
         if (result.hasResolution()) result.pendingIntent else null
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        null
     } catch (e: Exception) {
         null
     }

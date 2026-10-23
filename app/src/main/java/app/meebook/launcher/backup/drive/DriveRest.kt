@@ -106,21 +106,29 @@ class DriveRest(
         meta: JSONObject,
         resume: ResumeStore?,
     ): RemoteFile {
-        val key = "$parent|$name"
         val total = file.length()
-        var session: String
-        var offset: Long
+        // Size and mtime in the key: a changed local file never matches an old session.
+        val key = "$parent|$name|$total|${file.lastModified()}"
+        var restarted = false
+        var session: String? = null
+        var offset = 0L
+
         val stored = resume?.get(key)
-        if (stored != null && stored.second in 0 until total) {
-            session = stored.first; offset = stored.second
-        } else {
-            session = startSession(meta, total); offset = 0
+        if (stored != null) {
+            when (val s = queryStatus(stored.first, total)) {
+                is Status.Done -> { resume.clear(key); return s.file }
+                is Status.Offset -> { session = stored.first; offset = s.offset }
+                Status.Gone -> { resume.clear(key); restarted = true }
+            }
+        }
+        if (session == null) {
+            session = startSession(meta, total)
             resume?.put(key, session, 0)
         }
-        var restarted = false
+
         while (true) {
             val end = minOf(offset + CHUNK, total)
-            val c = connect("PUT", session)
+            val c = connect("PUT", session!!)
             try {
                 c.setRequestProperty("Content-Range", "bytes $offset-${end - 1}/$total")
                 c.doOutput = true
@@ -134,23 +142,61 @@ class DriveRest(
                         return r
                     }
                     code == 308 -> {
-                        offset = c.getHeaderField("Range")?.substringAfter('-', "")?.toLongOrNull()?.plus(1) ?: 0L
+                        val next = rangeEnd(c) ?: 0L
+                        if (next <= offset) throw DriveException(308, "Google Drive upload made no progress")
+                        offset = next
                         resume?.put(key, session, offset)
                     }
-                    (code == 404 || code == 410) && !restarted -> {
-                        // Session expired on the server: begin again once.
+                    code in RESTART_CODES && !restarted -> {
+                        // Session expired or no longer matches the file: begin again once.
                         restarted = true
                         resume?.clear(key)
                         session = startSession(meta, total); offset = 0
                         resume?.put(key, session, 0)
                     }
-                    else -> check(c)
+                    else -> {
+                        check(c)
+                        throw DriveException(code, "Google Drive upload ended unexpectedly (HTTP $code)")
+                    }
                 }
             } finally {
                 c.disconnect()
             }
         }
     }
+
+    private sealed interface Status {
+        data class Offset(val offset: Long) : Status
+        data class Done(val file: RemoteFile) : Status
+        data object Gone : Status
+    }
+
+    /** Asks Drive how much of the session it has committed (a Content-Range of "bytes star-slash-total"). */
+    private fun queryStatus(session: String, total: Long): Status {
+        val c = connect("PUT", session)
+        try {
+            c.setRequestProperty("Content-Range", "bytes */$total")
+            c.doOutput = true
+            c.setFixedLengthStreamingMode(0)
+            c.outputStream.close()
+            val code = c.responseCode
+            return when {
+                code == 308 -> Status.Offset(rangeEnd(c) ?: 0L)
+                code == 200 || code == 201 -> Status.Done(parseFile(readJson(c)))
+                code in RESTART_CODES -> Status.Gone
+                else -> {
+                    check(c)
+                    throw DriveException(code, "Google Drive upload status unexpected (HTTP $code)")
+                }
+            }
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /** Next offset to send according to a `Range: bytes=0-N` header, or null when none is committed. */
+    private fun rangeEnd(c: HttpURLConnection): Long? =
+        c.getHeaderField("Range")?.substringAfter('-', "")?.toLongOrNull()?.plus(1)
 
     private fun startSession(meta: JSONObject, total: Long): String {
         val body = meta.toString().toByteArray(Charsets.UTF_8)
@@ -221,6 +267,7 @@ class DriveRest(
         c.requestMethod = method
         c.connectTimeout = 30_000
         c.readTimeout = 60_000
+        c.instanceFollowRedirects = false
         c.setRequestProperty("Authorization", "Bearer ${token()}")
         return c
     }
@@ -253,6 +300,7 @@ class DriveRest(
         const val FOLDER_MIME = "application/vnd.google-apps.folder"
         const val FILE_FIELDS = "id,name,size,appProperties"
         const val THRESHOLD = 5L * 1024 * 1024
+        val RESTART_CODES = setOf(400, 404, 410, 416)
         const val CHUNK = 5L * 1024 * 1024 // multiple of 256 KiB
     }
 }
