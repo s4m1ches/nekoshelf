@@ -1,0 +1,211 @@
+package app.meebook.launcher.backup
+
+import android.database.sqlite.SQLiteDatabase
+import java.io.File
+import java.io.IOException
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.zip.ZipFile
+
+/** One file to bring back: from the snapshot zip ([zipEntry]) or downloaded from Drive ([book]). */
+data class RestoreItem(val zipEntry: String?, val book: BookEntry?, val target: File)
+
+/**
+ * What a restore would write. [books] = book files to download, [sdr] = whole `.sdr` folders,
+ * [statsRestored] = the stats DB comes back. These are exact counts of [items] for the UI.
+ */
+data class RestorePlan(val items: List<RestoreItem>, val books: Int, val sdr: Int, val statsRestored: Boolean)
+
+/**
+ * Only what is missing on the reader (spec "Restore"; nothing that exists is ever replaced):
+ * - a book: in the snapshot's manifest and nothing at that path now;
+ * - a `.sdr` folder: the reader has no folder at that path at all (even an empty one counts);
+ * - a KOReader file: it does not exist, and no `-wal`/`-shm`/`-journal` of it exists either
+ *   (they would pair with the restored file);
+ * - `settings/statistics.sqlite3`: as above, or the local DB is readable and has 0 rows in
+ *   `page_stat_data` (a 0-byte file counts as empty; an unreadable DB or one without that table
+ *   is kept);
+ * - a `-wal`/`-journal` of a SQLite file: only together with that file; `-shm` never (SQLite
+ *   rebuilds it). Entries that could land outside the target dirs are dropped.
+ */
+fun planRestore(zip: File, koreaderRoot: File, homeDir: File): RestorePlan {
+    val manifest = readManifest(zip)
+    val names = ZipFile(zip).use { z -> z.entries().asSequence().filter { !it.isDirectory }.map { it.name }.toSortedSet() }
+
+    val koItems = ArrayList<RestoreItem>()
+    val restoredBases = HashSet<String>()
+    // Sorted, so a file always comes before its "-wal"/"-journal".
+    for (name in names) {
+        if (!name.startsWith(KOREADER_PREFIX)) continue
+        val rel = name.removePrefix(KOREADER_PREFIX)
+        if (!isSnapshotKoreaderPath(rel)) continue
+        val target = resolveInside(koreaderRoot, rel) ?: continue
+        val base = sqliteBaseOf(rel)
+        if (base != null) {
+            if (base in restoredBases && !rel.endsWith("-shm") && !target.exists()) koItems += RestoreItem(name, null, target)
+        } else if (koreaderFileRestorable(rel, target)) {
+            koItems += RestoreItem(name, null, target)
+            restoredBases += rel
+        }
+    }
+
+    val sdrGroups = LinkedHashMap<String, MutableList<RestoreItem>>()
+    for (name in names) {
+        if (!name.startsWith(BOOKS_PREFIX)) continue
+        val rel = name.removePrefix(BOOKS_PREFIX)
+        val root = sdrRootOf(rel) ?: continue
+        val target = resolveInside(homeDir, rel) ?: continue
+        sdrGroups.getOrPut(root) { ArrayList() } += RestoreItem(name, null, target)
+    }
+    val sdrRestored = sdrGroups.filterKeys { root -> resolveInside(homeDir, root)?.exists() == false }
+
+    val bookItems = manifest.distinctBy { it.path }.sortedBy { it.path }.mapNotNull { b ->
+        val target = resolveInside(homeDir, b.path) ?: return@mapNotNull null
+        if (target.exists()) null else RestoreItem(null, b, target)
+    }
+
+    return RestorePlan(
+        items = koItems + sdrRestored.values.flatten() + bookItems,
+        books = bookItems.size,
+        sdr = sdrRestored.size,
+        statsRestored = STATS_REL in restoredBases,
+    )
+}
+
+/**
+ * Writes [plan]'s items: each through a temp file in the target's folder, renamed into place
+ * only if the target is still missing at that moment (the empty stats DB: still empty). A `.sdr`
+ * folder that appeared since planning is skipped whole, and so is a `-wal` whose DB was not
+ * written. Books are fetched by [downloadBook] into the temp file it is given. Stops on the
+ * first error; running it again only fills what is still missing.
+ */
+fun applyRestore(zip: File, plan: RestorePlan, downloadBook: (BookEntry, File) -> Unit) {
+    val writtenBases = HashSet<String>()
+    val sdrCreatedHere = HashSet<File>()
+    ZipFile(zip).use { z ->
+        for (item in plan.items) {
+            val entry = item.zipEntry
+            val target = item.target
+            when {
+                item.book != null -> {
+                    if (target.exists()) continue
+                    place(target, fill = { tmp -> downloadBook(item.book, tmp) })
+                }
+                entry == null -> continue
+                entry.startsWith(KOREADER_PREFIX) -> {
+                    val rel = entry.removePrefix(KOREADER_PREFIX)
+                    val base = sqliteBaseOf(rel)
+                    val fill = { tmp: File -> copyEntry(z, entry, tmp) }
+                    if (base != null) {
+                        if (rel.endsWith("-shm") || base !in writtenBases || target.exists()) continue
+                        place(target, fill)
+                    } else {
+                        if (!koreaderFileRestorable(rel, target)) continue
+                        val placed = place(
+                            target, fill,
+                            precondition = { siblingsAbsent(target) },
+                            mayReplace = { rel == STATS_REL && isEmptyStatsDb(target) },
+                        )
+                        if (placed) writtenBases += rel
+                    }
+                }
+                entry.startsWith(BOOKS_PREFIX) -> {
+                    val rel = entry.removePrefix(BOOKS_PREFIX)
+                    val root = sdrRootOf(rel) ?: continue
+                    val depth = rel.count { it == '/' } - root.count { it == '/' }
+                    val sdrDir = generateSequence(target) { it.parentFile }.elementAtOrNull(depth) ?: continue
+                    if (sdrDir.exists()) {
+                        if (sdrDir !in sdrCreatedHere) continue
+                    } else {
+                        sdrCreatedHere += sdrDir
+                    }
+                    if (target.exists()) continue
+                    place(target, fill = { tmp -> copyEntry(z, entry, tmp) })
+                }
+            }
+        }
+    }
+}
+
+/** "x-wal" / "x-shm" / "x-journal" -> "x"; anything else -> null. */
+private fun sqliteBaseOf(rel: String): String? =
+    SQLITE_SIBLINGS.firstOrNull { rel.endsWith(it) }?.let { rel.dropLast(it.length) }?.takeIf { it.isNotEmpty() }
+
+/** "a/b.sdr/c/d.lua" -> "a/b.sdr"; null when [rel] is not inside a `.sdr` folder. */
+private fun sdrRootOf(rel: String): String? {
+    val parts = rel.split('/')
+    val i = parts.indexOfFirst { isSdrName(it) }
+    return if (i < 0 || i == parts.lastIndex) null else parts.take(i + 1).joinToString("/")
+}
+
+private fun siblingsAbsent(target: File) = SQLITE_SIBLINGS.none { File(target.path + it).exists() }
+
+private fun koreaderFileRestorable(rel: String, target: File): Boolean = when {
+    !siblingsAbsent(target) -> false
+    !target.exists() -> true
+    else -> rel == STATS_REL && isEmptyStatsDb(target)
+}
+
+/**
+ * True only for a stats DB with nothing to lose: 0 bytes, or readable with 0 rows in
+ * `page_stat_data`. Checked on a copy (Android deletes DBs it finds corrupt).
+ */
+internal fun isEmptyStatsDb(f: File): Boolean {
+    if (!f.isFile) return false
+    if (f.length() == 0L) return true
+    val copy = File.createTempFile("stats-check", ".sqlite3")
+    return try {
+        f.copyTo(copy, overwrite = true)
+        val db = SQLiteDatabase.openDatabase(copy.path, null, SQLiteDatabase.OPEN_READWRITE)
+        try {
+            db.rawQuery("SELECT count(*) FROM page_stat_data", null).use { c -> c.moveToFirst() && c.getLong(0) == 0L }
+        } finally {
+            db.close()
+        }
+    } catch (e: Exception) {
+        false
+    } finally {
+        copy.delete()
+        SQLITE_SIBLINGS.forEach { File(copy.path + it).delete() }
+    }
+}
+
+private fun copyEntry(z: ZipFile, name: String, dest: File) {
+    val e = z.getEntry(name) ?: throw IOException("$name missing in snapshot")
+    z.getInputStream(e).use { input -> dest.outputStream().use { input.copyTo(it) } }
+}
+
+/**
+ * Fills a temp file next to [target], then renames it in. Right before the rename: [precondition]
+ * must hold, and an existing target is replaced only if [mayReplace] says so (otherwise the
+ * rename refuses to overwrite). Returns whether the file was placed; the temp file never stays.
+ */
+private fun place(
+    target: File,
+    fill: (File) -> Unit,
+    precondition: () -> Boolean = { true },
+    mayReplace: () -> Boolean = { false },
+): Boolean {
+    val dir = target.parentFile ?: throw IOException("no parent for $target")
+    if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create $dir")
+    val tmp = File.createTempFile(".restore-", ".tmp", dir)
+    try {
+        fill(tmp)
+        if (!tmp.isFile) throw IOException("nothing written for $target")
+        if (!precondition()) return false
+        if (target.exists()) {
+            if (!mayReplace()) return false
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } else {
+            try {
+                Files.move(tmp.toPath(), target.toPath()) // no REPLACE_EXISTING: fails if it appeared
+            } catch (e: FileAlreadyExistsException) {
+                return false
+            }
+        }
+        return true
+    } finally {
+        tmp.delete()
+    }
+}
