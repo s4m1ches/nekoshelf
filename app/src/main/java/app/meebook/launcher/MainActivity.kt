@@ -93,6 +93,8 @@ class MainActivity : ComponentActivity(), HomeActions {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("home", Context.MODE_PRIVATE)
+        // v1.1 renamed the decor counter (PREF_DECOR); drop the old key once.
+        if (prefs.contains(PREF_DECOR_OLD)) prefs.edit().remove(PREF_DECOR_OLD).apply()
         Log.i(TAG, "page keys: HAOQING_PAGE_UP=$HAOQING_PAGE_UP HAOQING_PAGE_DOWN=$HAOQING_PAGE_DOWN")
         toggles = Toggles(this)
         loader = HomeLoader(this)
@@ -419,6 +421,8 @@ class MainActivity : ComponentActivity(), HomeActions {
         const val MANGA_WAIT_MS = 1_000L
         const val PREF_TAB = "shelf_tab"
         const val PREF_DECOR = "decor_next"
+        /** Before v1.1: no longer read, removed in onCreate. */
+        const val PREF_DECOR_OLD = "decor_index"
         const val PREF_ASKED = "storage_asked"
     }
 }

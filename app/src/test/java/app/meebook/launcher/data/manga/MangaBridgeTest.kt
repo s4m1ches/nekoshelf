@@ -123,17 +123,17 @@ class MangaBridgeTest {
     )
 
     @Test fun newChaptersColumnIsRead() {
-        val c = MatrixCursor(contractColumns).apply {
-            addRow(arrayOf<Any?>(1L, "Berserk", "Src", 1000L, 5000L, 100, 40, 41L, "Ch. 41", 777L, 4))
+        MatrixCursor(contractColumns).use { c ->
+            c.addRow(arrayOf<Any?>(1L, "Berserk", "Src", 1000L, 5000L, 100, 40, 41L, "Ch. 41", 777L, 4))
+            assertEquals(listOf(Manga(1, "Berserk", 5000L, 100, 40, "Ch. 41", 1000L, 777L, 4)), readLibrary(c))
         }
-        assertEquals(listOf(Manga(1, "Berserk", 5000L, 100, 40, "Ch. 41", 1000L, 777L, 4)), readLibrary(c))
     }
 
     @Test fun missingColumnMeansZero() {
-        val c = MatrixCursor(contractColumns.copyOf(contractColumns.size - 1)).apply {
-            addRow(arrayOf<Any?>(1L, "Berserk", "Src", 1000L, 5000L, 100, 40, 41L, "Ch. 41", 777L))
+        MatrixCursor(contractColumns.copyOf(contractColumns.size - 1)).use { c ->
+            c.addRow(arrayOf<Any?>(1L, "Berserk", "Src", 1000L, 5000L, 100, 40, 41L, "Ch. 41", 777L))
+            assertEquals(listOf(Manga(1, "Berserk", 5000L, 100, 40, "Ch. 41", 1000L, 777L, 0)), readLibrary(c))
         }
-        assertEquals(listOf(Manga(1, "Berserk", 5000L, 100, 40, "Ch. 41", 1000L, 777L, 0)), readLibrary(c))
     }
 
     @Test fun backupStreamsFileOrNull() {

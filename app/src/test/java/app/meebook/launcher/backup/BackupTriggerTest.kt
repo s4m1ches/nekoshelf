@@ -8,6 +8,7 @@ import androidx.work.Configuration
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -21,6 +22,9 @@ import org.robolectric.RobolectricTestRunner
 class BackupTriggerTest {
     private lateinit var context: Context
     private lateinit var store: BackupStore
+    private val executor0 = BackupTrigger.executor
+    private val clock0 = BackupTrigger.clock
+    private val zone0 = BackupTrigger.zone
 
     @Before
     fun setUp() {
@@ -33,6 +37,14 @@ class BackupTriggerTest {
         store.save(BackupStatus.EMPTY)
         store.signedIn("a@b.c", 0L)
         battery(percent = 90, charging = false)
+    }
+
+    @After
+    fun tearDown() {
+        BackupTrigger.executor = executor0
+        BackupTrigger.clock = clock0
+        BackupTrigger.zone = zone0
+        WorkManagerTestInitHelper.closeWorkDatabase()
     }
 
     private fun battery(percent: Int, charging: Boolean) {
