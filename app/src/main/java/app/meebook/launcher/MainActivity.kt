@@ -23,6 +23,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import app.meebook.launcher.apps.AppEntry
 import app.meebook.launcher.apps.AppsRepository
+import app.meebook.launcher.backup.BackupTrigger
 import app.meebook.launcher.data.HomeData
 import app.meebook.launcher.data.HomeLoader
 import app.meebook.launcher.device.Eink
@@ -111,6 +112,7 @@ class MainActivity : ComponentActivity(), HomeActions {
 
     override fun onStart() {
         super.onStart()
+        BackupTrigger.onWake(this)
         state.overlay = null
         state.decors = nextDecors()
         observer = loader.bridge.registerObserver { quietRefresh() }
