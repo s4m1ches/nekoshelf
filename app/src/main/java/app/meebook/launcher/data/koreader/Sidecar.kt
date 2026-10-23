@@ -13,6 +13,9 @@ data class BookState(
     val series: String?,
     val seriesIndex: Double?,
     val language: String?,
+    /** KOReader's `partial_md5_checksum`; equals `book.md5` in statistics.sqlite3. */
+    val md5: String? = null,
+    val pages: Int? = null,
 )
 
 object Sidecar {
@@ -57,6 +60,14 @@ object Sidecar {
             series = series,
             seriesIndex = if (series != null) idx else null,
             language = str("language"),
+            md5 = (root["partial_md5_checksum"] as? String)?.takeIf { it.isNotEmpty() },
+            pages = (root["doc_pages"] ?: stats?.get("pages")).let { v ->
+                when (v) {
+                    is Long -> v.toInt()
+                    is Double -> v.toInt()
+                    else -> null
+                }
+            }?.takeIf { it > 0 },
         )
     }
 }

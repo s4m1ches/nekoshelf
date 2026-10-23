@@ -116,6 +116,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
             NowReading(
                 book = data.nowBook,
                 bookCover = data.nowBook?.let { data.bookCovers[it.file] },
+                bookSecondsLeft = data.nowBookSecondsLeft,
                 manga = data.nowManga,
                 mangaCover = data.nowManga?.let { data.mangaCovers[it.id] },
                 mangaAvailable = data.mangaAvailable,

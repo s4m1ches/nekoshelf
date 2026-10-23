@@ -16,6 +16,7 @@ import app.meebook.launcher.domain.Book
 import app.meebook.launcher.domain.DayStat
 import app.meebook.launcher.domain.Manga
 import app.meebook.launcher.domain.ShelfBuilder
+import app.meebook.launcher.domain.secondsLeft
 import app.meebook.launcher.domain.StatsCalc
 import app.meebook.launcher.domain.StatsSummary
 import java.io.File
@@ -53,6 +54,8 @@ data class HomeData(
     val mangaDays: List<DayStat> = emptyList(),
     /** Some «Манга» days come from the history import (seconds known, no pages). */
     val mangaBackfilled: Boolean = false,
+    /** Estimated time to finish [nowBook]; null without enough reading statistics. */
+    val nowBookSecondsLeft: Long? = null,
 ) {
     companion object {
         fun empty(): HomeData = HomeData(
@@ -119,6 +122,7 @@ class HomeLoader(
         val covers: Map<File, File>,
         val today: LocalDate,
         val nowMs: Long,
+        val nowBookSecondsLeft: Long? = null,
     )
 
     /** What the «Манга» bridge contributes. */
@@ -150,7 +154,14 @@ class HomeLoader(
         (books.filter { ShelfBuilder.isInProgress(it) } + listOfNotNull(nowBook)).distinct().forEach { b ->
             bookCovers.cover(b.file)?.let { covers[b.file] = it }
         }
-        return BooksPart(books, bookDays, bookDb.isFile, nowBook, covers, today, nowMs)
+        return BooksPart(books, bookDays, bookDb.isFile, nowBook, covers, today, nowMs, secondsLeft(nowBook, bookDb))
+    }
+
+    private fun secondsLeft(nowBook: Book?, db: File): Long? {
+        if (nowBook == null || nowBook.status == "complete") return null
+        val state = Sidecar.read(nowBook.file) ?: return null
+        val speeds = KoreaderStats.speeds(db, cacheDir)
+        return secondsLeft(state.pages, state.percent, state.md5?.let { speeds[it] }, speeds.values)
     }
 
     private fun readManga(today: LocalDate, nowMs: Long): MangaPart {
@@ -192,6 +203,7 @@ class HomeLoader(
         bookDays = b.bookDays,
         mangaDays = m?.days.orEmpty(),
         mangaBackfilled = m?.backfilled ?: false,
+        nowBookSecondsLeft = b.nowBookSecondsLeft,
     )
 
     /**

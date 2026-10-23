@@ -2,6 +2,7 @@ package app.meebook.launcher.data.koreader
 
 import android.database.sqlite.SQLiteDatabase
 import app.meebook.launcher.domain.DayStat
+import app.meebook.launcher.domain.ReadSpeed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -71,5 +72,20 @@ class KoreaderStatsTest {
         val before = db.length()
         KoreaderStats.daily(db, aqtau, cache())
         assertEquals(before, db.length())
+    }
+
+    @Test fun speedsAreKeyedByMd5() {
+        val db = makeDb(emptyList())
+        SQLiteDatabase.openDatabase(db.path, null, SQLiteDatabase.OPEN_READWRITE).use {
+            it.execSQL("UPDATE book SET md5 = 'cfc4', total_read_time = 13438, total_read_pages = 239 WHERE id = 1")
+            it.execSQL("INSERT INTO book(id, title, md5, total_read_time, total_read_pages) VALUES (2, 'B', 'beef', 0, 0)")
+            it.execSQL("INSERT INTO book(id, title) VALUES (3, 'no md5')")
+        }
+        val r = KoreaderStats.speeds(db, cache())
+        assertEquals(mapOf("cfc4" to ReadSpeed(13438, 239), "beef" to ReadSpeed(0, 0)), r)
+    }
+
+    @Test fun speedsMissingDbIsEmpty() {
+        assertTrue(KoreaderStats.speeds(File(tmp.root, "nope.sqlite3"), cache()).isEmpty())
     }
 }

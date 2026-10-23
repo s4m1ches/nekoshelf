@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import app.meebook.launcher.R
 import app.meebook.launcher.domain.Book
 import app.meebook.launcher.domain.Manga
+import app.meebook.launcher.domain.formatLeft
 import app.meebook.launcher.ui.EinkImages
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
@@ -54,6 +55,7 @@ private val COVER_H = 68.dp
 fun NowReading(
     book: Book?,
     bookCover: File?,
+    bookSecondsLeft: Long?,
     manga: Manga?,
     mangaCover: File?,
     mangaAvailable: Boolean,
@@ -83,7 +85,11 @@ fun NowReading(
                 ReadingCard(
                     title = book.title,
                     cover = bookCover,
-                    line = if (book.status == "complete") stringResource(R.string.book_done) else stringResource(R.string.book_progress, pct),
+                    line = when {
+                        book.status == "complete" -> stringResource(R.string.book_done)
+                        bookSecondsLeft != null -> stringResource(R.string.book_progress_left, pct, formatLeft(bookSecondsLeft))
+                        else -> stringResource(R.string.book_progress, pct)
+                    },
                     progress = (book.percent ?: 0.0).toFloat(),
                     onClick = { onBook(book) },
                     modifier = cardMod,

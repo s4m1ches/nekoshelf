@@ -23,6 +23,24 @@ class KoreaderTest {
 
     private fun slash(f: File) = f.path.replace("\\", "/")
 
+    @Test fun md5AndPages() {
+        val book = tmp.newFile("a.epub")
+        sidecar(book, "epub", """return { ["partial_md5_checksum"] = "cfc4ddd658bef9e6c6a526fcf37d3716", ["doc_pages"] = 6762, ["stats"] = { ["pages"] = 100 } }""")
+        val s = Sidecar.read(book)!!
+        assertEquals("cfc4ddd658bef9e6c6a526fcf37d3716", s.md5)
+        assertEquals(6762, s.pages)
+    }
+
+    @Test fun pagesFallBackToStatsAndAreNullWithoutThem() {
+        val book = tmp.newFile("b.epub")
+        sidecar(book, "epub", """return { ["stats"] = { ["pages"] = 321 } }""")
+        assertEquals(321, Sidecar.read(book)!!.pages)
+        assertNull(Sidecar.read(book)!!.md5)
+        val none = tmp.newFile("c.epub")
+        sidecar(none, "epub", """return { ["percent_finished"] = 0.5 }""")
+        assertNull(Sidecar.read(none)!!.pages)
+    }
+
     @Test fun realSidecarFixture() {
         val book = tmp.newFile("Скорбь любви меж Цзин и Вэй.epub")
         sidecar(book, "epub", fixture())
