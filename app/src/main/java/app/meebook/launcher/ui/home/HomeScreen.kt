@@ -27,6 +27,7 @@ import app.meebook.launcher.apps.AppEntry
 import app.meebook.launcher.data.HomeData
 import app.meebook.launcher.device.Toggles
 import app.meebook.launcher.domain.Book
+import app.meebook.launcher.domain.DecorSpot
 import app.meebook.launcher.domain.Manga
 import app.meebook.launcher.domain.ShelfBuilder
 import app.meebook.launcher.domain.ShelfTab
@@ -48,7 +49,7 @@ sealed interface Overlay {
 class HomeState(initialTab: ShelfTab) {
     var data by mutableStateOf(HomeData.empty())
     var picture by mutableStateOf<File?>(null)
-    var decor by mutableStateOf("")
+    var decors by mutableStateOf<List<DecorSpot>>(emptyList())
     var dock by mutableStateOf<List<AppEntry?>>(emptyList())
     var allApps by mutableStateOf<List<AppEntry>>(emptyList())
     var needsPermission by mutableStateOf(false)
@@ -91,7 +92,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
         Column(Modifier.fillMaxSize().swipes(onUp = actions::showAllApps)) {
             Header(
                 picture = state.picture,
-                decor = state.decor,
+                decors = state.decors,
                 toggles = toggles,
                 onRefresh = actions::fullRefresh,
                 onPictureSettled = actions::pictureSettled,

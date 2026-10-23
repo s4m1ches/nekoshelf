@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +62,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import app.meebook.launcher.R
 import app.meebook.launcher.device.Toggles
+import app.meebook.launcher.domain.DECOR_SLOTS
+import app.meebook.launcher.domain.DecorSpot
 import app.meebook.launcher.ui.EinkImages
 import app.meebook.launcher.ui.theme.Literata
 import coil3.compose.AsyncImage
@@ -75,15 +78,19 @@ import java.util.Locale
 /** Header height as a share of the screen height. */
 private const val HEADER_SHARE = 0.25f
 /**
- * Share of the header height above the picture frame — the catgirl's "stage". Task 8 had 0.27;
+ * Share of the header height above the picture frame — the catgirls' "stage". Task 8 had 0.27;
  * the owner asked for the figure ~10% larger, still standing in the strip (fix round 1 of
  * Task 9, reversing R11's overlap), so the strip grew to 0.30 (≈ +4.5 dp, taken from the picture).
+ * Then another +10% with the feet [DECOR_SINK] lower: 0.315 (≈ +2.7 dp, again from the picture).
  */
-private const val STAGE_SHARE = 0.30f
-/** Max decor width as a share of the header width (spec: ≤ 18%). */
+private const val STAGE_SHARE = 0.315f
+/**
+ * Share of a figure's height that sinks below the frame's top line — the owner asked for the
+ * figures 5% lower. The figure's top still meets the header's top, so nothing is clipped.
+ */
+private const val DECOR_SINK = 0.05f
+/** Max decor width as a share of the header width (spec: ≤ 18%); slots are 1/[DECOR_SLOTS] wide. */
 private const val DECOR_MAX_SHARE = 0.18f
-/** Horizontal centre of the decor — between the clock block and the toggles. */
-private const val DECOR_CENTER = 0.60f
 
 private val FallbackGrey = Color(0xFFEEEEEE)
 private val RU = Locale.forLanguageTag("ru")
@@ -95,7 +102,7 @@ private val DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM", RU)
  * outlined rounded frame (flat grey band if null or undecodable), the clock and the
  * Russian date top-left, three round toggles top-right (Wi‑Fi, frontlight, full
  * refresh; filled = on; long-press opens the system screen) with the battery % under
- * them, and the [decor] catgirl standing in the strip above the frame, on its top edge.
+ * them, and the [decors] catgirls standing in the strip above the frame, on its top edge.
  * [onPictureSettled] fires once the picture has been drawn or has failed to load; a long-press
  * on the clock calls [onAbout].
  *
@@ -105,7 +112,7 @@ private val DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM", RU)
 @Composable
 fun Header(
     picture: File?,
-    decor: String,
+    decors: List<DecorSpot>,
     toggles: Toggles,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
@@ -155,7 +162,7 @@ fun Header(
 
     HeaderContent(
         picture = picture,
-        decor = decor,
+        decors = decors,
         time = TIME.format(now),
         date = DATE.format(now),
         wifiOn = wifiOn,
@@ -183,7 +190,7 @@ fun Header(
 @Composable
 internal fun HeaderContent(
     picture: File?,
-    decor: String,
+    decors: List<DecorSpot>,
     time: String,
     date: String,
     wifiOn: Boolean,
@@ -255,13 +262,19 @@ internal fun HeaderContent(
             }
         }
         val decorWidth = width * DECOR_MAX_SHARE
-        CatgirlDecor(
-            decor = decor,
-            // +border: the feet / seat rest on the frame line rather than float above it.
-            height = stage + border,
-            maxWidth = decorWidth,
-            modifier = Modifier.offset(x = width * DECOR_CENTER - decorWidth / 2),
-        )
+        val slotWidth = width / DECOR_SLOTS
+        // +border: the feet / seat rest on the frame line, then sink DECOR_SINK of the height.
+        val decorHeight = (stage + border) / (1f - DECOR_SINK)
+        for (spot in decors) {
+            key(spot.slot) {
+                CatgirlDecor(
+                    decor = spot.decor,
+                    height = decorHeight,
+                    maxWidth = decorWidth,
+                    modifier = Modifier.offset(x = slotWidth * (spot.slot + 0.5f) - decorWidth / 2),
+                )
+            }
+        }
     }
 }
 

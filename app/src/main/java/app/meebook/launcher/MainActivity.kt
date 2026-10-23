@@ -31,9 +31,11 @@ import app.meebook.launcher.device.Launch
 import app.meebook.launcher.device.StorageAccess
 import app.meebook.launcher.device.Toggles
 import app.meebook.launcher.domain.Book
+import app.meebook.launcher.domain.DecorSpot
 import app.meebook.launcher.domain.Manga
 import app.meebook.launcher.domain.RefreshGuard
 import app.meebook.launcher.domain.ShelfTab
+import app.meebook.launcher.domain.pickDecorSpots
 import app.meebook.launcher.ui.home.HomeActions
 import app.meebook.launcher.ui.home.HomeScreen
 import app.meebook.launcher.ui.home.HomeState
@@ -51,6 +53,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.time.LocalDate
 import kotlin.coroutines.resume
+import kotlin.random.Random
 
 /**
  * The HOME activity. Every onStart (each return to the home screen) it picks the next header
@@ -109,7 +112,7 @@ class MainActivity : ComponentActivity(), HomeActions {
     override fun onStart() {
         super.onStart()
         state.overlay = null
-        state.decor = nextDecor()
+        state.decors = nextDecors()
         observer = loader.bridge.registerObserver { quietRefresh() }
         state.needsPermission = !hasStorage()
         if (state.needsPermission && !autoAsked) {
@@ -261,12 +264,10 @@ class MainActivity : ComponentActivity(), HomeActions {
         packageReceiver = receiver
     }
 
-    private fun nextDecor(): String {
-        val all = catgirlDecors(assets)
-        if (all.isEmpty()) return ""
-        val i = (prefs.getInt(PREF_DECOR, -1) + 1).mod(all.size)
-        prefs.edit().putInt(PREF_DECOR, i).apply()
-        return all[i]
+    private fun nextDecors(): List<DecorSpot> {
+        val (spots, next) = pickDecorSpots(catgirlDecors(assets), prefs.getInt(PREF_DECOR, 0), Random.Default)
+        prefs.edit().putInt(PREF_DECOR, next).apply()
+        return spots
     }
 
     // ---- storage permission (ruling R6) -------------------------------------------------------
@@ -403,7 +404,7 @@ class MainActivity : ComponentActivity(), HomeActions {
         /** How long the full refresh waits for the «Манга» phase after the books phase. */
         const val MANGA_WAIT_MS = 1_000L
         const val PREF_TAB = "shelf_tab"
-        const val PREF_DECOR = "decor_index"
+        const val PREF_DECOR = "decor_next"
         const val PREF_ASKED = "storage_asked"
     }
 }

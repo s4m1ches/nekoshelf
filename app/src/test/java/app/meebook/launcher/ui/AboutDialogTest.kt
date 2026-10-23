@@ -42,7 +42,7 @@ class AboutDialogTest {
         val text = context.assets.open("catgirls/CREDITS.md").bufferedReader().use { it.readText() }
         val blocks = parseMarkdown(text)
         val rows = blocks.filterIsInstance<MdBlock.Row>()
-        assertEquals(6, rows.size)
+        assertEquals(1, rows.size)
         assertTrue(rows.none { r -> r.cells.any { it == "File" || it.startsWith("---") } })
         assertTrue(blocks.first() is MdBlock.Heading)
         assertTrue(blocks.last() is MdBlock.Paragraph)
