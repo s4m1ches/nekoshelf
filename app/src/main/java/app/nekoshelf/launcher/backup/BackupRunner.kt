@@ -383,8 +383,8 @@ class BackupRunner(
         val RUNNING = AtomicBoolean(false)
         const val WORK_DIR = "backup-work"
         const val STALE_WORK_MS = 24L * 60 * 60 * 1000
-        const val ROOT = "Nekoshelf"
-        const val BOOKS = "books"
+        const val ROOT = DRIVE_ROOT
+        const val BOOKS = DRIVE_BOOKS
         const val KEEP = 14
         const val KIND_KOREADER = "koreader"
         const val KIND_MANGA = "manga"
@@ -396,12 +396,16 @@ class BackupRunner(
 
 // ---- book appProperties ------------------------------------------------------------------------
 
-private const val PROP_KIND = "kind"
+/** The app's folder in My Drive and the books mirror inside it (the inbox reads it too). */
+internal const val DRIVE_ROOT = "Nekoshelf"
+internal const val DRIVE_BOOKS = "books"
+
+internal const val PROP_KIND = "kind"
 private const val PROP_PID = "pid"
 private const val PROP_SIZE = "size"
 private const val PROP_MTIME = "mtime"
 private const val PROP_PATH_CHUNK = "p"
-private const val KIND_BOOK = "book"
+internal const val KIND_BOOK = "book"
 
 /** Drive's limit per appProperty: key + value, in UTF-8 bytes. */
 internal const val DRIVE_PROP_MAX_BYTES = 124

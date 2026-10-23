@@ -29,6 +29,10 @@ class BackupStore(context: Context) : ResumeStore {
             booksPending = prefs.getInt(BOOKS_PENDING, 0),
             booksCaughtUpOnce = prefs.getBoolean(BOOKS_CAUGHT_UP_ONCE, false),
             signedInAt = long(SIGNED_IN_AT),
+            inboxEnabled = prefs.getBoolean(INBOX_ENABLED, false),
+            inboxLastCheckAt = long(INBOX_LAST_CHECK_AT),
+            inboxReceived = prefs.getInt(INBOX_RECEIVED, 0),
+            inboxError = prefs.getString(INBOX_ERROR, null),
         )
     }
 
@@ -51,6 +55,10 @@ class BackupStore(context: Context) : ResumeStore {
                 .putInt(BOOKS_PENDING, s.booksPending)
                 .putBoolean(BOOKS_CAUGHT_UP_ONCE, s.booksCaughtUpOnce)
                 .putOrRemove(SIGNED_IN_AT, s.signedInAt)
+                .putBoolean(INBOX_ENABLED, s.inboxEnabled)
+                .putOrRemove(INBOX_LAST_CHECK_AT, s.inboxLastCheckAt)
+                .putInt(INBOX_RECEIVED, s.inboxReceived)
+                .putString(INBOX_ERROR, s.inboxError)
                 .commit()
         }
     }
@@ -71,6 +79,18 @@ class BackupStore(context: Context) : ResumeStore {
             save(BackupStatus.EMPTY)
             clearResumeSessions()
         }
+    }
+
+    // ---- inbox "seen" set: Drive file ids the inbox has handled (local cache of `inbox-seen.json`) ----
+
+    /**
+     * Ids the inbox must never download again. Kept across sign-out and the checkbox going off/on
+     * (Drive file ids are unique, so another account's ids never match).
+     */
+    fun inboxSeen(): Set<String> = synchronized(LOCK) { HashSet(prefs.getStringSet(INBOX_SEEN, null) ?: emptySet()) }
+
+    fun saveInboxSeen(ids: Set<String>) {
+        synchronized(LOCK) { prefs.edit().putStringSet(INBOX_SEEN, HashSet(ids)).commit() }
     }
 
     // ---- ResumeStore: value "<offset>|<url>" (the offset never contains '|'; the URL may) ----
@@ -122,5 +142,10 @@ class BackupStore(context: Context) : ResumeStore {
         const val BOOKS_PENDING = "booksPending"
         const val BOOKS_CAUGHT_UP_ONCE = "booksCaughtUpOnce"
         const val SIGNED_IN_AT = "signedInAt"
+        const val INBOX_ENABLED = "inboxEnabled"
+        const val INBOX_LAST_CHECK_AT = "inboxLastCheckAt"
+        const val INBOX_RECEIVED = "inboxReceived"
+        const val INBOX_ERROR = "inboxError"
+        const val INBOX_SEEN = "inboxSeen"
     }
 }

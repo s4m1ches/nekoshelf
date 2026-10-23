@@ -44,7 +44,16 @@ fun gunzipText(bytes: ByteArray): String = GZIPInputStream(bytes.inputStream()).
 
 /** In-memory Drive: folders and files by id, every call recorded. */
 class FakeDrive : Drive {
-    data class Node(val id: String, val parent: String?, val name: String, val folder: Boolean, var bytes: ByteArray, val props: Map<String, String>)
+    data class Node(
+        val id: String,
+        val parent: String?,
+        val name: String,
+        val folder: Boolean,
+        var bytes: ByteArray,
+        val props: Map<String, String>,
+        val mimeType: String = if (folder) FOLDER_MIME else "",
+        val modifiedTime: Long = 0L,
+    )
 
     val nodes = LinkedHashMap<String, Node>()
     val uploads = ArrayList<String>()
@@ -68,6 +77,29 @@ class FakeDrive : Drive {
 
     /** Thrown by every delete while set. */
     var failDelete: Exception? = null
+
+    /** Downloads of these ids throw the mapped exception while set. */
+    val failDownload = HashMap<String, Exception>()
+
+    /** Thrown by [listTree] while set. */
+    var failListTree: Exception? = null
+
+    /** Ids passed to [download], in order. */
+    val downloads = ArrayList<String>()
+
+    /** A file someone (the owner via Drive's UI, or the app) put under [parent]; returns its id. */
+    fun put(
+        parent: String,
+        name: String,
+        bytes: ByteArray,
+        props: Map<String, String> = emptyMap(),
+        mimeType: String = "application/octet-stream",
+        modifiedTime: Long = 0L,
+    ): String {
+        val id = "u${nextId++}"
+        nodes[id] = Node(id, parent, name, false, bytes, props, mimeType, modifiedTime)
+        return id
+    }
 
     /** The ResumeStore each upload got (for checking it is passed through). */
     val resumeStores = ArrayList<ResumeStore?>()
@@ -97,6 +129,7 @@ class FakeDrive : Drive {
 
     override fun listTree(rootId: String): List<TreeFile> {
         call()
+        failListTree?.let { throw it }
         val out = ArrayList<TreeFile>()
         fun walk(id: String, prefix: String) {
             for (n in nodes.values.filter { it.parent == id }) {
@@ -109,7 +142,8 @@ class FakeDrive : Drive {
 
     override fun findChild(parent: String, name: String): RemoteFile? {
         call()
-        return nodes.values.firstOrNull { it.parent == parent && it.name == name }?.remote()
+        val p = if (parent == "root") null else parent // Drive's alias for "My Drive"
+        return nodes.values.firstOrNull { it.parent == p && it.name == name }?.remote()
     }
 
     override fun upload(parent: String, name: String, file: File, props: Map<String, String>, resume: ResumeStore?): RemoteFile {
@@ -134,6 +168,8 @@ class FakeDrive : Drive {
 
     override fun download(id: String, to: File) {
         call()
+        downloads += id
+        failDownload[id]?.let { throw it }
         to.writeBytes(nodes[id]?.bytes ?: throw DriveException(404, "not found"))
     }
 
@@ -145,7 +181,11 @@ class FakeDrive : Drive {
         deletes += id
     }
 
-    private fun Node.remote() = RemoteFile(id, name, bytes.size.toLong(), props)
+    private fun Node.remote() = RemoteFile(id, name, bytes.size.toLong(), props, mimeType, modifiedTime, listOfNotNull(parent))
+
+    companion object {
+        const val FOLDER_MIME = "application/vnd.google-apps.folder"
+    }
 
     /** Slash path of a node from the Drive root, e.g. `Nekoshelf/books/sub/b.pdf`. */
     fun pathOf(n: Node): String {
@@ -863,6 +903,7 @@ class BackupRunnerTest {
             signedIn = true, account = "a@b", lastSuccessAt = 1, lastFailureAt = 2, lastError = "нет сети",
             failedAutoDay = "2026-10-23", failedAutoAttempts = 2, restoreOfferPending = true, koreaderSnapshots = 3, mangaSnapshots = 4,
             booksOnDrive = 5, booksLocal = 6, booksPending = 7, booksCaughtUpOnce = true, signedInAt = 8,
+            inboxEnabled = true, inboxLastCheckAt = 9, inboxReceived = 10, inboxError = "мало места",
         )
         store.save(s)
         assertEquals(s, BackupStore(ApplicationProvider.getApplicationContext()).load())

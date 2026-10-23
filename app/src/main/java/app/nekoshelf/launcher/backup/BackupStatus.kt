@@ -19,6 +19,14 @@ data class BackupStatus(
     val booksPending: Int,
     val booksCaughtUpOnce: Boolean,
     val signedInAt: Long?,
+    /** «Забирать новые книги с Диска» is on (the readonly grant was given). */
+    val inboxEnabled: Boolean = false,
+    /** When the inbox last checked `Nekoshelf/books`. */
+    val inboxLastCheckAt: Long? = null,
+    /** Books the last inbox check downloaded. */
+    val inboxReceived: Int = 0,
+    /** The last inbox check's error text; null when it went fine. */
+    val inboxError: String? = null,
 ) {
     companion object {
         val EMPTY = BackupStatus(
@@ -37,6 +45,10 @@ data class BackupStatus(
             booksPending = 0,
             booksCaughtUpOnce = false,
             signedInAt = null,
+            inboxEnabled = false,
+            inboxLastCheckAt = null,
+            inboxReceived = 0,
+            inboxError = null,
         )
     }
 }
