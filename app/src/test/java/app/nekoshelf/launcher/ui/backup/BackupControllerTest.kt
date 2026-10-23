@@ -450,25 +450,26 @@ class BackupControllerTest {
 
         store.update { it.copy(inboxNeedsReauth = false) }
         refresh()
-        state.backupUi = state.backupUi.copy(inboxWork = BackupWork.RUNNING)
+        state.backupUi = state.backupUi.copy(inboxWakeWork = BackupWork.RUNNING)
         controller.checkInboxNow(); idle()
         assertEquals("a check is running", 0, inboxChecks())
 
-        state.backupUi = state.backupUi.copy(inboxWork = BackupWork.IDLE)
+        state.backupUi = state.backupUi.copy(inboxWakeWork = BackupWork.ENQUEUED)
         controller.checkInboxNow(); idle()
-        assertEquals(1, inboxChecks())
+        assertEquals("a wake check waiting for Wi-Fi does not hold it", 1, inboxChecks())
     }
 
-    @Test fun aQueuedInboxCheckDisablesTheButton() {
+    @Test fun theTwoInboxWorksAreTrackedApart() {
         val st = HomeState(ShelfTab.ALL)
         val ac = Robolectric.buildActivity(ComponentActivity::class.java).create()
         controller(st, Dispatchers.Unconfined, ac.get())
         ac.start()
         idle()
-        assertEquals(BackupWork.IDLE, st.backupUi.inboxWork)
+        assertEquals(BackupWork.IDLE, st.backupUi.inboxManualWork)
         BackupTrigger.checkInboxNow(context) // waits for a network the test WorkManager never reports
-        repeat(20) { if (st.backupUi.inboxWork == BackupWork.IDLE) { Thread.sleep(50); idle() } }
-        assertEquals(BackupWork.ENQUEUED, st.backupUi.inboxWork)
+        repeat(20) { if (st.backupUi.inboxManualWork == BackupWork.IDLE) { Thread.sleep(50); idle() } }
+        assertEquals(BackupWork.ENQUEUED, st.backupUi.inboxManualWork)
+        assertEquals(BackupWork.IDLE, st.backupUi.inboxWakeWork)
     }
 
     /** The `Nekoshelf/books` folder on the fake Drive. */

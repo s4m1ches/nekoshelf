@@ -175,8 +175,8 @@ class BackupController(
                 combine(
                     wm.getWorkInfosForUniqueWorkFlow(BackupTrigger.INBOX_WORK_NAME),
                     wm.getWorkInfosForUniqueWorkFlow(BackupTrigger.INBOX_MANUAL_WORK_NAME),
-                ) { wake, manual -> workOf(wake + manual) }.collect { work ->
-                    ui { copy(inboxWork = work) }
+                ) { wake, manual -> Triple(workOf(wake), workOf(manual), workOf(wake + manual)) }.collect { (wake, manual, work) ->
+                    ui { copy(inboxWakeWork = wake, inboxManualWork = manual) }
                     // A check ended (even one too quick to be seen running): show what it recorded.
                     if (last != BackupWork.IDLE && work == BackupWork.IDLE) refreshStatus()
                     last = work

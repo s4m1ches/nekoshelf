@@ -82,8 +82,10 @@
     <string name="backup_restore">Восстановить…</string>
     <string name="inbox_checkbox">Забирать новые книги с Диска</string>
     <string name="inbox_no_access">нет доступа к Диску — включите заново</string>
-    <string name="inbox_status">Новые книги с Диска: последняя проверка %1$s, %2$s</string>
-    <string name="inbox_received">получено %1$d</string>
+    <string name="inbox_status">Новые книги с Диска: последняя проверка %1$s; %2$s</string>
+    <string name="inbox_status_error">Новые книги с Диска: последняя проверка %1$s, %2$s; %3$s</string>
+    <string name="inbox_last_received">последний раз получено %1$d %2$s</string>
+    <string name="inbox_nothing_yet">пока ничего не получено</string>
     <string name="inbox_never">Новые книги с Диска: ещё не проверялось</string>
     <string name="inbox_check">Проверить новые книги</string>
     <string name="backup_sign_in_failed">Не удалось войти в Google</string>

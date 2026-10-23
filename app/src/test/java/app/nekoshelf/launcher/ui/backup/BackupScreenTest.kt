@@ -15,7 +15,10 @@ import app.nekoshelf.launcher.backup.BackupStatus
 import app.nekoshelf.launcher.backup.RestoreItem
 import app.nekoshelf.launcher.backup.RestorePlan
 import app.nekoshelf.launcher.ui.home.HeaderContent
+import androidx.compose.ui.test.assertHeightIsAtLeast
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -315,32 +318,45 @@ class BackupScreenTest {
         rule.runOnIdle { assertEquals(listOf(false), inboxToggles) }
     }
 
-    @Test fun inboxStatusLineShowsTheLastCheckAndTheCount() {
-        val status = mutableStateOf(inboxOn.copy(inboxLastCheckAt = at(today, 8, 12), inboxReceived = 2))
+    @Test fun inboxStatusLineShowsTheLastCheckAndTheLastBooksReceived() {
+        val status = mutableStateOf(inboxOn.copy(inboxLastCheckAt = at(today, 8, 12)))
         rule.setContent {
             BackupScreen(status = status.value, onSignIn = {}, onBackupNow = {}, onRestore = {}, onDismiss = {}, nowMs = now, zone = zone)
         }
-        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 08:12, получено 2").assertExists()
-        status.value = inboxOn.copy(inboxLastCheckAt = at(today.minusDays(1), 23, 0), inboxReceived = 0)
-        rule.onNodeWithText("Новые книги с Диска: последняя проверка вчера 23:00, получено 0").assertExists()
-        status.value = inboxOn.copy(inboxLastCheckAt = at(LocalDate.of(2026, 10, 1), 7, 5), inboxReceived = 1)
-        rule.onNodeWithText("Новые книги с Диска: последняя проверка 1 октября 07:05, получено 1").assertExists()
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 08:12; пока ничего не получено").assertExists()
+        status.value = inboxOn.copy(inboxLastCheckAt = at(today, 8, 12), inboxReceived = 2, inboxLastReceived = 2, inboxLastReceivedAt = at(today, 8, 12))
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 08:12; последний раз получено 2 сегодня 08:12").assertExists()
+        // A later check that found nothing does not hide what the last one brought.
+        status.value = inboxOn.copy(inboxLastCheckAt = at(today, 11, 0), inboxReceived = 0, inboxLastReceived = 1, inboxLastReceivedAt = at(LocalDate.of(2026, 10, 1), 7, 5))
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 11:00; последний раз получено 1 1 октября 07:05").assertExists()
     }
 
-    @Test fun inboxErrorReplacesTheCount() {
-        screen(inboxOn.copy(inboxLastCheckAt = at(today, 8, 12), inboxReceived = 3, inboxError = "мало места"))
-        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 08:12, мало места").assertExists()
+    @Test fun inboxErrorIsShownBesideTheLastCheck() {
+        screen(inboxOn.copy(inboxLastCheckAt = at(today, 8, 12), inboxError = "мало места", inboxLastReceived = 3, inboxLastReceivedAt = at(today.minusDays(1), 23, 0)))
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 08:12, мало места; последний раз получено 3 вчера 23:00").assertExists()
     }
 
-    @Test fun needsReauthShowsTheErrorAndATapTurnsItOnAgain() {
+    @Test fun needsReauthShowsACheckedBoxWithTheErrorAndATapTurnsItOff() {
         screen(inboxOn.copy(inboxNeedsReauth = true, inboxLastCheckAt = at(today, 8, 12), inboxError = "нет доступа к Диску — включите заново"))
         rule.onNodeWithText("нет доступа к Диску — включите заново").assertExists()
-        rule.onNodeWithText("Забирать новые книги с Диска").assertIsOff().performClick()
+        rule.onNodeWithText("Забирать новые книги с Диска").assertIsOn().performClick()
         rule.onNodeWithText("Проверить новые книги").assertIsNotEnabled().performClick()
         rule.runOnIdle {
-            assertEquals(listOf(true), inboxToggles)
+            assertEquals(listOf(false), inboxToggles)
             assertEquals(0, inboxChecks.intValue)
         }
+    }
+
+    @Test fun offAfterNeedsReauthShowsAnUncheckedBoxAndATapStartsTheTurnOn() {
+        screen(signedIn.copy(inboxEnabled = false, inboxNeedsReauth = true))
+        rule.onNodeWithText("нет доступа к Диску — включите заново").assertDoesNotExist()
+        rule.onNodeWithText("Забирать новые книги с Диска").assertIsOff().performClick()
+        rule.runOnIdle { assertEquals(listOf(true), inboxToggles) }
+    }
+
+    @Test fun checkboxRowIsAFullTouchTarget() {
+        screen(signedIn)
+        rule.onNodeWithText("Забирать новые книги с Диска").assertHeightIsAtLeast(48.dp)
     }
 
     @Test fun aFailedTurnOnShowsTheErrorUnderTheBox() {
@@ -349,23 +365,39 @@ class BackupScreenTest {
         rule.onNodeWithText("Забирать новые книги с Диска").assertIsOff()
     }
 
-    @Test fun inboxWorkQueuedOrRunningDisablesTheCheckButton() {
-        val work = mutableStateOf(BackupWork.ENQUEUED)
+    @Test fun manualCheckQueuedOrRunningOrWakeCheckRunningDisablesTheCheckButton() {
+        val ui = mutableStateOf(BackupUi(inboxManualWork = BackupWork.ENQUEUED))
         rule.setContent {
             BackupScreen(
                 status = inboxOn, onSignIn = {}, onBackupNow = { backups.intValue++ }, onRestore = {}, onDismiss = {},
-                ui = BackupUi(inboxWork = work.value), onCheckInbox = { inboxChecks.intValue++ }, nowMs = now, zone = zone,
+                ui = ui.value, onCheckInbox = { inboxChecks.intValue++ }, nowMs = now, zone = zone,
             )
         }
-        for (w in listOf(BackupWork.ENQUEUED, BackupWork.RUNNING)) {
-            work.value = w
+        for (u in listOf(
+            BackupUi(inboxManualWork = BackupWork.ENQUEUED),
+            BackupUi(inboxManualWork = BackupWork.RUNNING),
+            BackupUi(inboxWakeWork = BackupWork.RUNNING),
+        )) {
+            ui.value = u
             rule.onNodeWithText("Проверить новые книги").assertIsNotEnabled().performClick()
             // The backup's own button does not wait for the inbox.
             rule.onNodeWithText("Сделать сейчас").assertIsEnabled()
         }
-        work.value = BackupWork.IDLE
+        // A wake check queued for Wi-Fi (e.g. on mobile data) does not hold the button.
+        ui.value = BackupUi(inboxWakeWork = BackupWork.ENQUEUED)
         rule.onNodeWithText("Проверить новые книги").assertIsEnabled().performClick()
         rule.runOnIdle { assertEquals(1, inboxChecks.intValue) }
+    }
+
+    @Test fun checkButtonRule() {
+        val idle = BackupUi()
+        assertTrue(inboxCheckEnabled(inboxOn, idle))
+        assertTrue(inboxCheckEnabled(inboxOn, idle.copy(inboxWakeWork = BackupWork.ENQUEUED)))
+        assertFalse(inboxCheckEnabled(inboxOn, idle.copy(inboxWakeWork = BackupWork.RUNNING)))
+        assertFalse(inboxCheckEnabled(inboxOn, idle.copy(inboxManualWork = BackupWork.ENQUEUED)))
+        assertFalse(inboxCheckEnabled(inboxOn, idle.copy(inboxManualWork = BackupWork.RUNNING)))
+        assertFalse(inboxCheckEnabled(inboxOn.copy(inboxNeedsReauth = true), idle))
+        assertFalse(inboxCheckEnabled(signedIn, idle))
     }
 
     @Test fun busyDisablesTheCheckbox() {

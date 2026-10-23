@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.toggleable
@@ -54,8 +55,8 @@ enum class BackupWork { IDLE, ENQUEUED, RUNNING }
  * the last action ([message]), the date for the restore offer, [busy] while a sign-in,
  * restore, «Манга» save or turning the inbox on is under way (its buttons and the checkbox are then
  * disabled), and [restoring] while a restore holds backups (from «Восстановить…» until it ends; the
- * offer card is hidden then). [inboxWork] is the inbox checks' state (works "inbox" and
- * "inbox-manual" together); [inboxMessage] says why turning the inbox on failed.
+ * offer card is hidden then). [inboxWakeWork] and [inboxManualWork] are the inbox checks' states
+ * (works "inbox" and "inbox-manual"); [inboxMessage] says why turning the inbox on failed.
  */
 data class BackupUi(
     val work: BackupWork = BackupWork.IDLE,
@@ -63,7 +64,8 @@ data class BackupUi(
     val offerDate: LocalDate? = null,
     val busy: Boolean = false,
     val restoring: Boolean = false,
-    val inboxWork: BackupWork = BackupWork.IDLE,
+    val inboxWakeWork: BackupWork = BackupWork.IDLE,
+    val inboxManualWork: BackupWork = BackupWork.IDLE,
     val inboxMessage: String? = null,
 )
 
@@ -164,25 +166,13 @@ fun BackupScreen(
             FilledButton(stringResource(R.string.backup_sign_in), enabled = !ui.busy, onClick = onSignIn, modifier = Modifier.padding(vertical = 6.dp))
         }
 
-        // A sign-in failure waiting for a re-enable shows the box off: a tap runs the turn-on again.
-        val inboxOn = status.inboxEnabled && !status.inboxNeedsReauth
-        CheckboxRow(stringResource(R.string.inbox_checkbox), checked = inboxOn, enabled = !ui.busy, onChange = onInboxToggle)
-        val inboxProblem = if (status.inboxNeedsReauth) stringResource(R.string.inbox_no_access) else ui.inboxMessage
+        // A sign-in failure waiting for a re-enable keeps the box checked under its error: a tap turns
+        // the inbox off, the next one runs the turn-on again.
+        val reauth = status.inboxEnabled && status.inboxNeedsReauth
+        CheckboxRow(stringResource(R.string.inbox_checkbox), checked = status.inboxEnabled, enabled = !ui.busy, onChange = onInboxToggle)
+        val inboxProblem = if (reauth) stringResource(R.string.inbox_no_access) else ui.inboxMessage
         if (inboxProblem != null) Text(inboxProblem, style = serif(15f, bold = true), modifier = Modifier.padding(top = 2.dp))
-        if (inboxOn) {
-            val checked = status.inboxLastCheckAt
-            Line(
-                if (checked == null) {
-                    stringResource(R.string.inbox_never)
-                } else {
-                    stringResource(
-                        R.string.inbox_status,
-                        backupTimeText(checked, nowMs, zone),
-                        status.inboxError ?: stringResource(R.string.inbox_received, status.inboxReceived),
-                    )
-                },
-            )
-        }
+        if (status.inboxEnabled && !reauth) Line(inboxStatusText(status, nowMs, zone), maxLines = 3)
 
         // «Восстановить…» (both) waits while a run is queued or running: a queued run starts as soon
         // as the network is back and would snapshot a half-restored reader.
@@ -263,18 +253,42 @@ fun BackupScreen(
 }
 
 /**
- * «Проверить новые книги» may be pressed: the inbox is on and needs no re-enable, no inbox check is
- * queued or running, nothing else is under way, and no restore offer holds the app.
+ * «Новые книги с Диска: последняя проверка <когда>[, <ошибка>]; последний раз получено N <когда>»
+ * (or «пока ничего не получено»): a check that found nothing does not hide what an earlier one brought.
+ */
+@Composable
+private fun inboxStatusText(status: BackupStatus, nowMs: Long, zone: ZoneId): String {
+    val checked = status.inboxLastCheckAt ?: return stringResource(R.string.inbox_never)
+    val receivedAt = status.inboxLastReceivedAt
+    val received = if (receivedAt != null && status.inboxLastReceived > 0) {
+        stringResource(R.string.inbox_last_received, status.inboxLastReceived, backupTimeText(receivedAt, nowMs, zone))
+    } else {
+        stringResource(R.string.inbox_nothing_yet)
+    }
+    val error = status.inboxError
+    return if (error == null) {
+        stringResource(R.string.inbox_status, backupTimeText(checked, nowMs, zone), received)
+    } else {
+        stringResource(R.string.inbox_status_error, backupTimeText(checked, nowMs, zone), error, received)
+    }
+}
+
+/**
+ * «Проверить новые книги» may be pressed: the inbox is on and needs no re-enable, no manual check is
+ * queued or running and no wake check is running (one queued for an unmetered network does not
+ * count: on mobile data it may wait for hours), nothing else is under way, and no restore offer
+ * holds the app.
  */
 internal fun inboxCheckEnabled(status: BackupStatus, ui: BackupUi): Boolean =
-    status.inboxEnabled && !status.inboxNeedsReauth && ui.inboxWork == BackupWork.IDLE && !ui.busy && !status.restoreOfferPending
+    status.inboxEnabled && !status.inboxNeedsReauth && ui.inboxManualWork == BackupWork.IDLE &&
+        ui.inboxWakeWork != BackupWork.RUNNING && !ui.busy && !status.restoreOfferPending
 
-/** A square box (filled inside when [checked]) and its label; the whole row toggles. No animation. */
+/** A square box (filled inside when [checked]) and its label; the whole row (at least 48 dp tall) toggles. No animation. */
 @Composable
 private fun CheckboxRow(text: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
     val color = if (enabled) Color.Black else DisabledGrey
     Row(
-        Modifier.padding(top = 8.dp).fillMaxWidth()
+        Modifier.padding(top = 2.dp).fillMaxWidth().heightIn(min = 48.dp)
             .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -292,7 +306,7 @@ private fun snapshots(n: Int): String =
 
 /** «Label: value» with the label in grey, as in the mockup; one text node. */
 @Composable
-private fun Line(text: String) {
+private fun Line(text: String, maxLines: Int = 2) {
     val cut = text.indexOf(": ")
     val styled = buildAnnotatedString {
         if (cut > 0) {
@@ -302,7 +316,7 @@ private fun Line(text: String) {
             append(text)
         }
     }
-    Text(styled, style = serif(15f), modifier = Modifier.padding(top = 6.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+    Text(styled, style = serif(15f), modifier = Modifier.padding(top = 6.dp), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 }
 
 @Composable
