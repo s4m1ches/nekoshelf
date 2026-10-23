@@ -46,6 +46,12 @@ import javax.net.ssl.SSLException
  * first in every run, on an [unmetered] network only; whatever it does, the backup goes on and
  * succeeds or fails as it would without it (the inbox keeps its own status fields).
  *
+ * With the checkbox on (`inboxEnabled`) books go up only under the readonly view: without
+ * [readonly], or once [readonlyLost] says the readonly token gave out by the time the listing was
+ * done, the books step uploads nothing (books stay pending, `booksCaughtUpOnce` unchanged; the
+ * snapshot, «Манга», retention and counts run as usual) and the loss is the inbox's error:
+ * the owner's files would be invisible and their books uploaded again as duplicates.
+ *
  * The `Nekoshelf` root is the one [DriveRoots.resolve] finds (the inbox uses the same), created
  * only when there is none.
  */
@@ -62,6 +68,7 @@ class BackupRunner(
     private val inbox: InboxRunner? = null,
     private val unmetered: () -> Boolean = { false },
     private val readonly: Boolean = inbox != null,
+    private val readonlyLost: () -> Exception? = { null },
 ) {
     /**
      * KOReader snapshot → «Манга» (skipped only when unavailable) → retention → books (if
@@ -287,8 +294,18 @@ class BackupRunner(
                 val path = bookPathOf(f.props) ?: continue
                 index[path] = index[path].orEmpty() + f
             }
-            // Local books with a file of any creator at their path (only visible with readonly).
-            val userPaths = if (readonly) userBookPaths(root) else emptySet()
+            // Ruling I3: with the checkbox on, no uploads without a whole readonly listing.
+            var held = start.inboxEnabled && !readonly
+            // Local books with an owner's file at their path (only visible with readonly).
+            var userPaths: Set<String> = emptySet()
+            if (readonly) {
+                userPaths = userBookPaths(root)
+                readonlyLost()?.let { lost ->
+                    recordInboxFailure(store, lost)
+                    held = true
+                    userPaths = emptySet()
+                }
+            }
             val userPresent = HashSet<String>()
             val pending = ArrayList<BookEntry>()
             for (b in manifest) {
@@ -310,6 +327,7 @@ class BackupRunner(
             counts.local = manifest.size
             counts.onDrive = onDrive()
             counts.pending = pending.size
+            if (held) return firstError // booksDone stays false: the caught-up flag is left alone
             if (!upload) {
                 counts.booksDone = true
                 return firstError
@@ -338,14 +356,15 @@ class BackupRunner(
         }
 
         /**
-         * Relative paths of every file under `Nekoshelf/books` (all folders of that name; creates
-         * none), the app's or the owner's. Google-native entries (Docs, shortcuts) are not copies
-         * of a book and do not count.
+         * Relative paths of the owner's files under `Nekoshelf/books` (all folders of that name;
+         * creates none). The backup's own copies (`kind=book`) are left out: they count only when
+         * they match the book (size + mtime), so a changed book still replaces its old copy.
+         * Google-native entries (Docs, shortcuts) are not copies of a book and do not count.
          */
         private fun userBookPaths(root: String): Set<String> =
             drive.findChildren(root, BOOKS).filter { it.isFolder() }
                 .flatMap { drive.listTree(it.id) }
-                .filter { !it.file.mimeType.startsWith(GOOGLE_NATIVE_PREFIX) }
+                .filter { it.file.props[PROP_KIND] != KIND_BOOK && !it.file.mimeType.startsWith(GOOGLE_NATIVE_PREFIX) }
                 .mapTo(HashSet()) { it.relativePath }
 
         private fun upload(parent: String, name: String, file: File, props: Map<String, String>): RemoteFile =
@@ -415,11 +434,18 @@ class BackupRunner(
         drive.download(f.id, to)
     }
 
+    /** The `Nekoshelf/books` folders for path lookups, found once per runner (a restore asks per book). */
+    @Volatile private var booksDirs: List<RemoteFile>? = null
+
+    private fun booksDirsForLookup(): List<RemoteFile> = booksDirs ?: run {
+        val root = DriveRoots.resolve(drive) ?: return emptyList()
+        drive.findChildren(root.id, BOOKS).filter { it.isFolder() }.also { booksDirs = it }
+    }
+
     /** Any non-folder, non-Google-native file at [entry]'s path under `Nekoshelf/books`, one of the same size first. */
     private fun atPath(entry: BookEntry): RemoteFile {
-        val root = DriveRoots.resolve(drive) ?: throw FileNotFoundException("book not on Google Drive")
         val segments = entry.path.split('/')
-        var dirs = drive.findChildren(root.id, BOOKS).filter { it.isFolder() }
+        var dirs = booksDirsForLookup()
         for (seg in segments.dropLast(1)) dirs = dirs.flatMap { d -> drive.findChildren(d.id, seg).filter { it.isFolder() } }
         val files = dirs.flatMap { d -> drive.findChildren(d.id, segments.last()) }
             .filter { !it.isFolder() && !it.mimeType.startsWith(GOOGLE_NATIVE_PREFIX) }

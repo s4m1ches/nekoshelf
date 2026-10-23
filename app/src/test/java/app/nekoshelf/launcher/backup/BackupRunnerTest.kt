@@ -91,6 +91,9 @@ class FakeDrive : Drive {
     /** Ids passed to [download], in order. */
     val downloads = ArrayList<String>()
 
+    /** (parent, name) of every [findChildren] call. */
+    val childQueries = ArrayList<Pair<String, String>>()
+
     /** [listTree] calls (the readonly-only listing). */
     var treeCalls = 0
 
@@ -165,6 +168,7 @@ class FakeDrive : Drive {
 
     override fun findChildren(parent: String, name: String): List<RemoteFile> {
         call()
+        childQueries += parent to name
         val p = if (parent == "root") null else parent // Drive's alias for "My Drive"
         return nodes.values.filter { it.parent == p && it.name == name }.map { it.remote() }
     }
@@ -263,8 +267,12 @@ class BackupRunnerTest {
     private fun book(rel: String, text: String, mtime: Long = 1_700_000_000_000L): File =
         File(home, rel).also { it.parentFile!!.mkdirs(); it.writeText(text); it.setLastModified(mtime) }
 
-    private fun runner(inbox: InboxRunner? = null, unmetered: Boolean = true, readonly: Boolean = inbox != null) =
-        BackupRunner(drive, store, ko, { home }, { manga() }, { mangaAvailable() }, cache, { now }, zone, inbox, { unmetered }, readonly)
+    private fun runner(
+        inbox: InboxRunner? = null,
+        unmetered: Boolean = true,
+        readonly: Boolean = inbox != null,
+        readonlyLost: () -> Exception? = { null },
+    ) = BackupRunner(drive, store, ko, { home }, { manga() }, { mangaAvailable() }, cache, { now }, zone, inbox, { unmetered }, readonly, readonlyLost)
 
     private fun run(power: Power = charging, manual: Boolean = false, powerNow: () -> Power = { power }) =
         runner().run(power, manual, powerNow)
@@ -1058,6 +1066,99 @@ class BackupRunnerTest {
         assertEquals(0, s.booksPending)
         assertEquals(6, s.booksLocal)
         assertEquals(6, s.booksOnDrive)
+    }
+
+    @Test fun changedBookReplacesItsOldCopyUnderTheReadonlyView() {
+        run()
+        val oldA = drive.files()["Nekoshelf/books/a.epub"]!!.id
+        val a = book("a.epub", "aaaa-longer", mtime = 1_700_000_500_000L)
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+
+        val s = grantedRun(inbox = null)
+
+        assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk", "a.epub"), drive.uploads)
+        assertTrue(oldA in drive.deletes)
+        val copies = drive.nodes.values.filter { bookPathOf(it.props) == "a.epub" }
+        assertEquals(1, copies.size)
+        assertEquals("1700000500000", copies[0].props["mtime"])
+        assertEquals(0, s.booksPending)
+        assertEquals(3, s.booksOnDrive)
+
+        // Restoring it brings the new version back.
+        val to = File(tmp.root, "a.epub")
+        runner(readonly = true).downloadBook(BookEntry("a.epub", a.length(), a.lastModified()), to)
+        assertEquals("aaaa-longer", to.readText())
+    }
+
+    @Test fun checkboxOnWithoutReadonlyViewHoldsTheBooks() {
+        store.update { it.copy(inboxEnabled = true) }
+
+        val s = runner().run(charging, false) // no readonly view this run
+
+        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk"), drive.uploads)
+        assertEquals(0, drive.treeCalls)
+        assertEquals(3, s.booksLocal)
+        assertEquals(3, s.booksPending)
+        assertEquals(0, s.booksOnDrive)
+        assertFalse(s.booksCaughtUpOnce)
+        assertEquals(1, s.koreaderSnapshots)
+        assertEquals(now, s.lastSuccessAt)
+        assertNull(s.lastError)
+    }
+
+    @Test fun caughtUpFlagIsLeftAloneWhileBooksAreHeld() {
+        run()
+        book("new.epub", "n")
+        store.update { it.copy(inboxEnabled = true) }
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+
+        val s = runner().run(charging, false)
+
+        assertTrue("new.epub" !in drive.uploads)
+        assertEquals(1, s.booksPending)
+        assertTrue(s.booksCaughtUpOnce)
+    }
+
+    @Test fun readonlyLostByTheListingHoldsTheBooksAndIsTheInboxError() {
+        store.update { it.copy(inboxEnabled = true) }
+
+        val s = runner(readonly = true, readonlyLost = { DriveAuthException("no drive.readonly token mid-run") }).run(charging, false)
+
+        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk"), drive.uploads)
+        assertEquals(3, s.booksPending)
+        assertFalse(s.booksCaughtUpOnce)
+        assertEquals(INBOX_ERROR_NO_ACCESS, s.inboxError)
+        assertEquals(now, s.lastSuccessAt)
+        assertNull(s.lastError)
+
+        // Play services failing for the readonly token mid-run: the same path, not a failed backup.
+        drive.uploads.clear()
+        now += 60_000
+        val t = runner(readonly = true, readonlyLost = { TokenUnavailableException("Google Play services timed out", null) })
+            .run(charging, false)
+        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk"), drive.uploads)
+        assertEquals(3, t.booksPending)
+        assertEquals("нет сети", t.inboxError)
+        assertEquals(now, t.lastSuccessAt)
+        assertNull(t.lastError)
+    }
+
+    @Test fun restoreLooksUpTheBooksFolderOncePerRunner() {
+        run()
+        val series = drive.putFolder(booksFolder(), "Серия")
+        userFile(series, "Том 1.epub", "один")
+        userFile(series, "Том 2.epub", "два")
+        drive.childQueries.clear()
+        val r = runner(readonly = true)
+
+        r.downloadBook(BookEntry("Серия/Том 1.epub", 8, 1), File(tmp.root, "t1"))
+        r.downloadBook(BookEntry("Серия/Том 2.epub", 6, 1), File(tmp.root, "t2"))
+
+        assertEquals(1, drive.childQueries.count { it == ("root" to "Nekoshelf") })
+        assertEquals(1, drive.childQueries.count { it.second == "books" })
+        assertEquals("два", File(tmp.root, "t2").readText())
     }
 
     @Test fun inboxWorkerHoldingTheGuardCausesNoDuplicateUpload() {

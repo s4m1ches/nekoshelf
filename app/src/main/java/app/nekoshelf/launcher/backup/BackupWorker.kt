@@ -9,6 +9,7 @@ import androidx.work.WorkerParameters
 import app.nekoshelf.launcher.backup.drive.DriveAuthException
 import app.nekoshelf.launcher.backup.drive.DriveRest
 import app.nekoshelf.launcher.backup.drive.GoogleAuth
+import app.nekoshelf.launcher.backup.drive.TokenUnavailableException
 import app.nekoshelf.launcher.data.koreader.KoreaderPaths
 import app.nekoshelf.launcher.data.manga.MangaBridge
 import kotlinx.coroutines.CancellationException
@@ -99,16 +100,18 @@ fun koreaderHomeDir(): File = KoreaderPaths(koreaderRoot()).homeDir()
  *
  * [readonlyToken] (drive.file + drive.readonly; non-null only while the inbox checkbox is on and the
  * grant was given) adds the inbox step and the readonly view: the backup's Drive then asks it first
- * (falling back to [token] should it stop giving one mid-run, so a lost grant never fails the
- * backup), and the inbox's own Drive asks only it (none → [DriveAuthException], the inbox's error).
+ * ([ReadonlyFallbackToken]: should it stop giving one mid-run, [token] carries on so a lost grant
+ * never fails the backup, and the runner uploads no books for that run), and the inbox's own Drive
+ * asks only it (none → [DriveAuthException], the inbox's error).
  */
 fun backupRunner(app: Context, store: BackupStore, token: () -> String?, readonlyToken: (() -> String?)? = null): BackupRunner {
     fun drive(t: () -> String?) = DriveRest(token = { t() ?: throw DriveAuthException("token unavailable") })
     val inbox = readonlyToken?.let { ro ->
         InboxRunner(drive(ro), store, ::koreaderHomeDir, { it.usableSpace }, System::currentTimeMillis)
     }
+    val backupToken = readonlyToken?.let { ReadonlyFallbackToken(it, token) }
     return BackupRunner(
-        drive = if (readonlyToken == null) drive(token) else drive { readonlyToken() ?: token() },
+        drive = drive(backupToken ?: token),
         store = store,
         koreaderRoot = koreaderRoot(),
         homeDir = ::koreaderHomeDir,
@@ -120,7 +123,33 @@ fun backupRunner(app: Context, store: BackupStore, token: () -> String?, readonl
         inbox = inbox,
         unmetered = { isUnmetered(app) },
         readonly = readonlyToken != null,
+        readonlyLost = { backupToken?.lost },
     )
+}
+
+/**
+ * The backup's token while the readonly grant is in use: the [readonly] one; once that gives none
+ * (the grant gone) or Play services fail for it ([TokenUnavailableException]), the [base]
+ * drive.file one for the rest of the run, with [lost] saying why the readonly view is gone.
+ */
+internal class ReadonlyFallbackToken(
+    private val readonly: () -> String?,
+    private val base: () -> String?,
+) : () -> String? {
+    @Volatile var lost: Exception? = null
+        private set
+
+    override fun invoke(): String? {
+        if (lost == null) {
+            try {
+                readonly()?.let { return it }
+                lost = DriveAuthException("no drive.readonly token mid-run")
+            } catch (e: TokenUnavailableException) {
+                lost = e
+            }
+        }
+        return base()
+    }
 }
 
 /** Whether the active network is unmetered (Wi-Fi as a rule); false when unknown. */
