@@ -46,9 +46,6 @@ interface Drive {
     /** Every non-trashed, non-folder descendant of [rootId], walked breadth-first. */
     fun listTree(rootId: String): List<TreeFile>
 
-    /** A non-trashed child of [parent] named [name], whoever created it; null when absent. */
-    fun findChild(parent: String, name: String): RemoteFile?
-
     /** Every non-trashed child of [parent] named [name], whoever created it, with its mimeType ([parent] may be `root`). */
     fun findChildren(parent: String, name: String): List<RemoteFile>
 

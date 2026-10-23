@@ -164,8 +164,6 @@ class FakeDrive : Drive {
         return out
     }
 
-    override fun findChild(parent: String, name: String): RemoteFile? = findChildren(parent, name).firstOrNull()
-
     override fun findChildren(parent: String, name: String): List<RemoteFile> {
         call()
         childQueries += parent to name

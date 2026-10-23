@@ -331,13 +331,13 @@ class DriveRestTest {
         assertTrue(decodedQuery(server.takeRequest().path!!).contains("pageToken=T2"))
     }
 
-    @Test fun findChildEscapesQuotes() {
+    @Test fun findChildrenEscapesQuotes() {
         server.enqueue(json("""{"files":[{"id":"C1","name":"It's"}]}"""))
-        assertEquals("C1", drive.findChild("P'1", "It's")?.id)
+        assertEquals("C1", drive.findChildren("P'1", "It's").single().id)
         val q = decodedQuery(server.takeRequest().path!!)
         assertTrue(q, q.contains("name = 'It\\'s' and 'P\\'1' in parents and trashed = false"))
         server.enqueue(json("""{"files":[]}"""))
-        assertNull(drive.findChild("P", "x"))
+        assertTrue(drive.findChildren("P", "x").isEmpty())
     }
 
     @Test fun findChildrenReturnsEverySameNamedChildWithItsMimeType() {

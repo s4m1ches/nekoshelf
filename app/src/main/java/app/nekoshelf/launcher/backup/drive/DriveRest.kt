@@ -50,8 +50,6 @@ class DriveRest(
         return out
     }
 
-    override fun findChild(parent: String, name: String): RemoteFile? = findChildren(parent, name).firstOrNull()
-
     override fun findChildren(parent: String, name: String): List<RemoteFile> =
         search("name = '${esc(name)}' and '${esc(parent)}' in parents and trashed = false", TREE_FIELDS)
 
