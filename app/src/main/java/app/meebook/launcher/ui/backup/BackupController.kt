@@ -36,6 +36,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.LocalDate
@@ -71,11 +73,15 @@ class BackupDeps(
  * header's «☁!») and the work's state current. Everything that touches prefs, Play services,
  * Drive or files runs on [BackupDeps.io]; the main thread only swaps state.
  *
- * Ruling R28: `restoreOfferPending` is also the "hold automatic backups" flag for a whole restore.
- * «Восстановить…» sets it, remembering the value before. Only an answer that ends the matter
- * clears it: «Не нужно», a restore that completed (fully or partly), or an empty plan. A failed
- * plan, «Отмена», leaving the dialog, or a restore that failed outright puts the remembered value
- * back (a pending offer stays pending; a restore started from the button releases the hold).
+ * Ruling R28: `restoreOfferPending` is also the "hold automatic backups" flag for a whole restore
+ * (the runner and the worker do nothing while it is set). «Восстановить…» sets it, remembering
+ * the value before; it does not open while a backup is queued or running. Only an answer that ends
+ * the matter clears it: «Не нужно», a fully completed restore, or an empty plan. A partial restore
+ * keeps it set, so the offer stays up (R30). A failed plan, «Отмена», leaving the dialog, or a
+ * restore that failed outright puts the remembered value back (a pending offer stays pending; a
+ * restore started from the button releases the hold). Whenever the hold is released, a wake check
+ * runs ([BackupTrigger.onWake]): the backup it held may be due. All flag writes go one at a time,
+ * in call order ([writeFlag]).
  *
  * Construct it in `onCreate` (it registers the sign-in result launcher).
  */
@@ -100,6 +106,8 @@ class BackupController(
     private var restoreGen = 0
     /** While the restore dialog holds backups: the flag's value before «Восстановить…» (R28). */
     private var holdPrevious: Boolean? = null
+    /** Serializes the offer/hold flag writes (FIFO), see [writeFlag]. */
+    private val flagLock = Mutex()
 
     private val signInLauncher =
         activity.registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult(), ::onSignInResult)
@@ -209,7 +217,7 @@ class BackupController(
                     val runner = deps.runner { token }
                     val has = runner.hasRemoteBackups()
                     if (has) date = runner.latestSnapshotDate()
-                    store.update { it.copy(restoreOfferPending = has) }
+                    writeFlag { has }
                 }
                 store.signedIn(auth.account(), System.currentTimeMillis())
                 Result.success(date)
@@ -224,7 +232,7 @@ class BackupController(
             onSuccess = { date ->
                 ui { copy(busy = false, message = null, offerDate = date) }
             },
-            onFailure = { e -> ui { copy(busy = false, message = backupErrorText(e)) } },
+            onFailure = { e -> ui { copy(busy = false, message = backupErrorText(e, text(R.string.backup_check_failed))) } },
         )
         refreshStatus()
     }
@@ -242,12 +250,8 @@ class BackupController(
 
     override fun declineRestoreOffer() {
         if (state.backupUi.busy) return
-        scope.launch {
-            withContext(io) { store.update { it.copy(restoreOfferPending = false) } }
-            loadStatus()
-            // Automatic backups were waiting for this answer.
-            BackupTrigger.onWake(app)
-        }
+        // Automatic backups were waiting for this answer.
+        setOfferPending(false)
     }
 
     private fun fetchOfferDate() {
@@ -268,17 +272,15 @@ class BackupController(
     // ---- restore -------------------------------------------------------------------------------
 
     override fun openRestore() {
-        if (state.backupUi.busy || state.restore != null) return
+        // Not while a backup is queued or running: a queued one starts as soon as the network is
+        // back (e.g. Wi-Fi turned on to restore) and would snapshot a half-restored reader.
+        if (state.backupUi.busy || state.restore != null || state.backupUi.work != BackupWork.IDLE) return
         ui { copy(message = null, restoring = true) }
         state.restore = RestoreUi(plan = null, mangaAvailable = false)
         val gen = ++restoreGen
         scope.launch {
             // Hold automatic backups for the whole restore (R28), remembering the value before.
-            val previous = withContext(io) {
-                val p = store.load().restoreOfferPending
-                store.update { it.copy(restoreOfferPending = true) }
-                p
-            }
+            val previous = writeFlag { true }
             if (gen != restoreGen) { // closed while the flag was being set
                 setOfferPending(previous)
                 return@launch
@@ -319,7 +321,7 @@ class BackupController(
                     val p = holdPrevious ?: previous
                     holdPrevious = null
                     state.restore = null
-                    ui { copy(message = backupErrorText(e), restoring = false) }
+                    ui { copy(message = backupErrorText(e, text(R.string.restore_plan_failed)), restoring = false) }
                     setOfferPending(p)
                 },
             )
@@ -341,8 +343,8 @@ class BackupController(
 
     /**
      * Ruling R26: on IO; the snapshot is deleted afterwards whatever happened. The hold stays for
-     * the whole apply; a completed restore (also a partial one) clears the flag, an outright
-     * failure puts the previous value back (R28).
+     * the whole apply; a full restore clears the flag, a partial one keeps it so the offer stays up
+     * (R30), an outright failure puts the previous value back (R28).
      */
     override fun confirmRestore() {
         val plan = state.restore?.plan ?: return
@@ -355,11 +357,12 @@ class BackupController(
         state.restore = null
         ui { copy(busy = true, message = text(R.string.restore_working)) }
         scope.launch {
-            val (message, completed) = withContext(io) {
+            // The flag afterwards: released by a full restore, kept by a partial one, as before otherwise.
+            val (message, hold) = withContext(io) {
                 try {
                     val runner = runner()
                     applyRestore(zip, plan) { book, to -> runner.downloadBook(book, to) }
-                    text(R.string.restore_done) to true
+                    text(R.string.restore_done) to false
                 } catch (e: RestoreFailedException) {
                     Log.w(TAG, "restore partly failed", e)
                     app.getString(R.string.restore_partial, e.failed) to true
@@ -367,22 +370,48 @@ class BackupController(
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "restore failed", e)
-                    backupErrorText(e) to false
+                    backupErrorText(e, text(R.string.restore_failed)) to previous
                 } finally {
                     zip.delete()
                 }
             }
-            withContext(io) { store.update { it.copy(restoreOfferPending = if (completed) false else previous) } }
+            writeFlag { hold }
             ui { copy(busy = false, restoring = false, message = message) }
             loadStatus()
+            if (!hold) {
+                BackupTrigger.onWake(app) // released: the backup it held may be due
+            } else if (state.backupUi.offerDate == null) {
+                fetchOfferDate() // the offer card comes back after a partial restore
+            }
         }
     }
 
-    /** Stores the offer/hold flag off the main thread, then rereads the status. */
+    /**
+     * Stores the offer/hold flag off the main thread, then rereads the status. Releasing the hold
+     * runs a wake check: the automatic backup it held may be due now.
+     */
     private fun setOfferPending(value: Boolean) {
         scope.launch {
-            withContext(io) { store.update { it.copy(restoreOfferPending = value) } }
+            writeFlag { value }
             loadStatus()
+            if (!value) BackupTrigger.onWake(app)
+        }
+    }
+
+    /**
+     * The only way the controller writes the offer/hold flag: one write at a time, in call order
+     * (a [Mutex] is fair), each a single read-and-set in [BackupStore.update] — so a close's write
+     * can never land after the next open's read (ledger T9). [change] maps the stored value to the
+     * new one; returns the stored value from before.
+     */
+    private suspend fun writeFlag(change: (Boolean) -> Boolean): Boolean = flagLock.withLock {
+        withContext(io) {
+            var before = false
+            store.update {
+                before = it.restoreOfferPending
+                it.copy(restoreOfferPending = change(before))
+            }
+            before
         }
     }
 
@@ -408,7 +437,7 @@ class BackupController(
                     throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "«Манга» backup save failed", e)
-                    backupErrorText(e)
+                    backupErrorText(e, text(R.string.manga_save_failed))
                 }
             }
             // Shown in the dialog; if it was closed meanwhile, on the backup screen.

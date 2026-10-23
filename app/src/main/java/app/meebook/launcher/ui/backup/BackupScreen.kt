@@ -148,13 +148,16 @@ fun BackupScreen(
             FilledButton(stringResource(R.string.backup_sign_in), enabled = !ui.busy, onClick = onSignIn, modifier = Modifier.padding(vertical = 6.dp))
         }
 
+        // «Восстановить…» (both) waits while a run is queued or running: a queued run starts as soon
+        // as the network is back and would snapshot a half-restored reader.
+        val restoreEnabled = ui.work == BackupWork.IDLE && !ui.busy
         if (status.restoreOfferPending && !ui.restoring) {
             Column(Modifier.padding(vertical = 8.dp).fillMaxWidth().outlinedCard().padding(12.dp)) {
                 val offer = ui.offerDate?.let { stringResource(R.string.backup_offer, dayMonthText(it)) }
                     ?: stringResource(R.string.backup_offer_no_date)
                 Text(offer, style = serif(15f, bold = true))
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(stringResource(R.string.backup_restore), enabled = !ui.busy, onClick = onRestore, modifier = Modifier.weight(1f))
+                    OutlinedButton(stringResource(R.string.backup_restore), enabled = restoreEnabled, onClick = onRestore, modifier = Modifier.weight(1f))
                     OutlinedButton(stringResource(R.string.backup_offer_no), enabled = !ui.busy, onClick = onDeclineOffer, modifier = Modifier.weight(1f))
                 }
             }
@@ -202,10 +205,9 @@ fun BackupScreen(
                 onClick = onBackupNow,
                 modifier = Modifier.weight(1f),
             )
-            // Not while a run reads the very files a restore would write.
             OutlinedButton(
                 stringResource(R.string.backup_restore),
-                enabled = ui.work != BackupWork.RUNNING && !ui.busy,
+                enabled = restoreEnabled,
                 onClick = onRestore,
                 modifier = Modifier.weight(1f),
             )

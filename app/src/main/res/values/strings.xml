@@ -82,8 +82,12 @@
     <string name="backup_restore">Восстановить…</string>
     <string name="backup_sign_in_failed">Не удалось войти в Google</string>
     <string name="backup_checking_drive">Проверяю Google Диск…</string>
+    <string name="backup_check_failed">не удалось проверить Google Диск</string>
     <string name="restore_checking">Проверяю, чего не хватает…</string>
-    <string name="restore_summary">Вернётся: книг %1$d, прогресс %2$d книг, статистика — %3$s</string>
+    <!-- %2$s = «1 книги» / «2 книг» (genitive after «прогресс») -->
+    <string name="restore_summary">Вернётся: книг %1$d, прогресс %2$s, статистика — %3$s</string>
+    <string name="restore_sdr_one">книги</string>
+    <string name="restore_sdr_many">книг</string>
     <string name="restore_stats_yes">да.</string>
     <string name="restore_stats_no">нет (на читалке есть своя).</string>
     <string name="restore_ask">Восстановить?</string>
@@ -95,6 +99,9 @@
     <string name="restore_working">Восстанавливаю…</string>
     <string name="restore_done">Готово</string>
     <string name="restore_partial">Восстановлено, но не удалось: %1$d</string>
+    <string name="restore_plan_failed">не удалось подготовить восстановление</string>
+    <string name="restore_failed">не удалось восстановить</string>
+    <string name="manga_save_failed">не удалось скачать бэкап Манги</string>
     <string name="manga_saving">Сохраняю…</string>
     <string name="manga_saved">Сохранено в Загрузки: %1$s</string>
     <string name="manga_none">На Диске нет бэкапа Манги</string>

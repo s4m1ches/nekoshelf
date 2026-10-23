@@ -1,9 +1,12 @@
 package app.meebook.launcher.ui.backup
 
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import app.meebook.launcher.backup.BackupStatus
@@ -157,6 +160,26 @@ class BackupScreenTest {
         rule.runOnIdle { assertEquals(1, declines.intValue) }
     }
 
+    @Test fun queuedOrRunningWorkDisablesBothRestoreButtons() {
+        // A queued run starts as soon as the network is back — e.g. when the owner turns Wi-Fi on to restore.
+        val work = mutableStateOf(BackupWork.ENQUEUED)
+        rule.setContent {
+            BackupScreen(
+                status = signedIn.copy(restoreOfferPending = true), onSignIn = {}, onBackupNow = {},
+                onRestore = { restores.intValue++ }, onDismiss = {}, ui = BackupUi(work = work.value),
+                nowMs = now, zone = zone,
+            )
+        }
+        for (w in listOf(BackupWork.ENQUEUED, BackupWork.RUNNING)) {
+            work.value = w
+            val buttons = rule.onAllNodesWithText("Восстановить…")
+            buttons.assertCountEquals(2)
+            for (i in 0 until 2) buttons[i].assertIsNotEnabled().performClick()
+            rule.onNodeWithText("Не нужно").assertIsEnabled()
+            rule.runOnIdle { assertEquals(0, restores.intValue) }
+        }
+    }
+
     @Test fun offerCardIsHiddenWhileARestoreHoldsBackups() {
         screen(signedIn.copy(restoreOfferPending = true), BackupUi(offerDate = LocalDate.of(2026, 10, 21), restoring = true))
         rule.onNodeWithText("На Диске есть бэкап от 21 октября — восстановить?").assertDoesNotExist()
@@ -211,6 +234,18 @@ class BackupScreenTest {
         rule.onNodeWithText("Отмена").assertExists()
         rule.onNodeWithText("Восстановить").performClick()
         rule.runOnIdle { assertEquals(1, confirms.intValue) }
+    }
+
+    @Test fun progressCountUsesTheGenitive() {
+        val items = listOf(RestoreItem("books/x.sdr/m.lua", null, File("x")))
+        val sdr = mutableIntStateOf(1)
+        rule.setContent {
+            RestoreDialog(RestorePlan(items, books = 1, sdr = sdr.intValue, statsRestored = false), false, {}, {}, {})
+        }
+        for ((n, words) in listOf(1 to "1 книги", 2 to "2 книг", 5 to "5 книг", 11 to "11 книг", 21 to "21 книги")) {
+            sdr.intValue = n
+            rule.onNodeWithText("Вернётся: книг 1, прогресс $words, статистика — нет (на читалке есть своя).").assertExists()
+        }
     }
 
     @Test fun planWithStatsSaysYes() {

@@ -15,6 +15,9 @@ import app.meebook.launcher.backup.FakeDrive
 import app.meebook.launcher.backup.Power
 import app.meebook.launcher.backup.gunzipText
 import app.meebook.launcher.backup.tachibk
+import android.content.Intent
+import android.os.BatteryManager
+import kotlinx.coroutines.CoroutineDispatcher
 import app.meebook.launcher.backup.drive.Drive
 import app.meebook.launcher.domain.ShelfTab
 import app.meebook.launcher.ui.home.HomeState
@@ -40,6 +43,7 @@ import java.net.UnknownHostException
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.concurrent.Executor
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Ruling R28: `restoreOfferPending` holds automatic backups for a whole restore and is cleared only
@@ -69,6 +73,16 @@ class BackupControllerTest {
         context = ApplicationProvider.getApplicationContext()
         WorkManagerTestInitHelper.initializeTestWorkManager(context, Configuration.Builder().build())
         BackupTrigger.executor = Executor { it.run() }
+        // The next day, battery full: a wake queues a run unless something holds it.
+        BackupTrigger.clock = { now + 24 * 3_600_000L }
+        BackupTrigger.zone = { zone }
+        @Suppress("DEPRECATION")
+        context.sendStickyBroadcast(
+            Intent(Intent.ACTION_BATTERY_CHANGED)
+                .putExtra(BatteryManager.EXTRA_LEVEL, 90)
+                .putExtra(BatteryManager.EXTRA_SCALE, 100)
+                .putExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_DISCHARGING),
+        )
         store = BackupStore(context)
         store.save(BackupStatus.EMPTY)
         store.signedIn("owner@example.com", now)
@@ -83,9 +97,13 @@ class BackupControllerTest {
         runner().run(Power(50, charging = true), manual = true)
         setPending(false)
 
-        val activity = Robolectric.buildActivity(ComponentActivity::class.java).create().get()
         state = HomeState(ShelfTab.ALL)
-        controller = BackupController(
+        controller = controller(state, Dispatchers.Unconfined)
+    }
+
+    private fun controller(state: HomeState, io: CoroutineDispatcher): BackupController {
+        val activity = Robolectric.buildActivity(ComponentActivity::class.java).create().get()
+        return BackupController(
             activity, state,
             BackupDeps(
                 store = store,
@@ -93,17 +111,40 @@ class BackupControllerTest {
                 koreaderRoot = { ko },
                 homeDir = { home },
                 downloads = { downloads },
-                io = Dispatchers.Unconfined,
+                io = io,
             ),
         )
     }
 
     private val savedExecutor = BackupTrigger.executor
+    private val savedClock = BackupTrigger.clock
+    private val savedZone = BackupTrigger.zone
 
     @After fun tearDown() {
         BackupTrigger.executor = savedExecutor
+        BackupTrigger.clock = savedClock
+        BackupTrigger.zone = savedZone
         WorkManagerTestInitHelper.closeWorkDatabase()
     }
+
+    /** Runs the IO work it is handed only when told, newest first: the worst order for racing writes. */
+    private class LifoDispatcher : CoroutineDispatcher() {
+        val tasks = ArrayDeque<Runnable>()
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            tasks.addLast(block)
+        }
+    }
+
+    private fun drain(io: LifoDispatcher) {
+        repeat(1000) {
+            idle()
+            val task = io.tasks.removeLastOrNull() ?: return
+            task.run()
+        }
+        error("IO work did not settle")
+    }
+
+    private fun queuedRuns() = WorkManager.getInstance(context).getWorkInfosForUniqueWork(BackupTrigger.WORK_NAME).get().size
 
     private fun runner(): BackupRunner {
         val watched = object : Drive by fake {
@@ -129,6 +170,44 @@ class BackupControllerTest {
         assertNull(state.restore)
         assertEquals("нет сети", state.backupUi.message)
         assertFalse(state.backupUi.restoring)
+        assertEquals("the offer still holds backups", 0, queuedRuns())
+    }
+
+    @Test fun planFailureWithoutAKnownCauseSaysTheRestoreCouldNotBePrepared() {
+        fake.failEverything = IllegalStateException("boom")
+        open()
+        assertEquals("не удалось подготовить восстановление", state.backupUi.message)
+        assertFalse(pending())
+    }
+
+    @Test fun restoreDoesNotOpenWhileARunIsQueuedOrRunning() {
+        for (work in listOf(BackupWork.ENQUEUED, BackupWork.RUNNING)) {
+            state.backupUi = state.backupUi.copy(work = work)
+            open()
+            assertNull(state.restore)
+            assertFalse(state.backupUi.restoring)
+            assertFalse(pending())
+        }
+    }
+
+    @Test fun closeThenReopenAtOnceKeepsTheHoldOn() {
+        // Ledger T9: the close's write must not land after the reopen's read-and-set.
+        val io = LifoDispatcher()
+        val st = HomeState(ShelfTab.ALL)
+        val c = controller(st, io)
+        File(home, "a.epub").delete()
+        c.openRestore(); drain(io)
+        assertNotNull(st.restore?.plan)
+        assertTrue(pending())
+
+        c.closeRestore()
+        c.openRestore()
+        drain(io)
+
+        assertNotNull(st.restore?.plan)
+        assertTrue("held while the reopened dialog is up", pending())
+        c.closeRestore(); drain(io)
+        assertFalse("the button restore gives the hold back", pending())
     }
 
     @Test fun cancelKeepsAPendingOffer() {
@@ -140,6 +219,7 @@ class BackupControllerTest {
         controller.closeRestore(); idle()
         assertTrue(pending())
         assertNull(state.restore)
+        assertEquals("the offer still waits for an answer", 0, queuedRuns())
     }
 
     @Test fun completedRestoreClearsTheOfferAndHeldBackupsWhileApplying() {
@@ -152,16 +232,29 @@ class BackupControllerTest {
         assertFalse(pending())
         assertEquals("Готово", state.backupUi.message)
         assertFalse(state.backupUi.busy)
+        assertEquals("released: the waiting backup is queued", 1, queuedRuns())
     }
 
-    @Test fun partialRestoreCountsAsCompleted() {
+    @Test fun partialRestoreKeepsTheOffer() {
+        // R30: the reader is still half-restored; the offer stays until a full restore or «Не нужно».
         setPending(true)
         File(home, "a.epub").delete()
         open()
         fake.failEverything = UnknownHostException("offline")
         controller.confirmRestore(); idle()
-        assertFalse(pending())
+        assertTrue(pending())
         assertEquals("Восстановлено, но не удалось: 1", state.backupUi.message)
+        assertFalse(state.backupUi.restoring)
+        assertEquals(0, queuedRuns())
+    }
+
+    @Test fun partialRestoreFromTheButtonAlsoKeepsTheHold() {
+        File(home, "a.epub").delete()
+        open()
+        fake.failEverything = UnknownHostException("offline")
+        controller.confirmRestore(); idle()
+        assertTrue(pending())
+        assertEquals(0, queuedRuns())
     }
 
     @Test fun emptyPlanClearsTheOffer() {
@@ -171,6 +264,7 @@ class BackupControllerTest {
         assertFalse(pending())
         controller.closeRestore(); idle()
         assertFalse(pending())
+        assertEquals(1, queuedRuns())
     }
 
     @Test fun declineClearsTheOffer() {
@@ -187,6 +281,7 @@ class BackupControllerTest {
         assertTrue("held while the dialog is open", pending())
         controller.closeRestore(); idle()
         assertFalse(pending())
+        assertEquals("released: a run held meanwhile may go now", 1, queuedRuns())
     }
 
     @Test fun restoreFromTheButtonHoldsBackupsWhileApplyingThenReleases() {
@@ -225,5 +320,12 @@ class BackupControllerTest {
         assertEquals("tachibk", gunzipText(saved.readBytes()))
         assertEquals("Сохранено в Загрузки: manga-2026-10-23.tachibk", state.restore?.message)
         assertFalse(state.backupUi.busy)
+    }
+
+    @Test fun mangaSaveFailureWithoutAKnownCauseSaysWhatFailed() {
+        open()
+        fake.failEverything = IllegalStateException("boom")
+        controller.saveMangaBackup(); idle()
+        assertEquals("не удалось скачать бэкап Манги", state.restore?.message)
     }
 }

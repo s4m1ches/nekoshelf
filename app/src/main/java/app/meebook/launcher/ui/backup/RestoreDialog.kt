@@ -64,7 +64,7 @@ fun RestoreDialog(
                 }
                 else -> {
                     val stats = stringResource(if (plan.statsRestored) R.string.restore_stats_yes else R.string.restore_stats_no)
-                    Text(stringResource(R.string.restore_summary, plan.books, plan.sdr, stats), style = serif(15f))
+                    Text(stringResource(R.string.restore_summary, plan.books, progressBooks(plan.sdr), stats), style = serif(15f))
                     Text(stringResource(R.string.restore_ask), style = serif(15f, bold = true), modifier = Modifier.padding(top = 6.dp))
                     Text(stringResource(R.string.restore_close_koreader), style = serif(13f), modifier = Modifier.padding(top = 6.dp))
                     MangaSave(mangaAvailable, onSaveManga, message, busy)
@@ -87,3 +87,8 @@ private fun MangaSave(available: Boolean, onSave: () -> Unit, message: String?, 
     }
     if (message != null) Text(message, style = serif(13f, bold = true), modifier = Modifier.padding(top = 6.dp))
 }
+
+/** «1 книги», «2 книг», «5 книг», «21 книги»: the genitive that follows «прогресс». */
+@Composable
+private fun progressBooks(n: Int): String =
+    "$n " + ruPlural(n, stringResource(R.string.restore_sdr_one), stringResource(R.string.restore_sdr_many), stringResource(R.string.restore_sdr_many))
