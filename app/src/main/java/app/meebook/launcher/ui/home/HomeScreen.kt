@@ -31,11 +31,13 @@ import app.meebook.launcher.domain.Manga
 import app.meebook.launcher.domain.ShelfBuilder
 import app.meebook.launcher.domain.ShelfTab
 import app.meebook.launcher.ui.apps.AllAppsScreen
+import app.meebook.launcher.ui.stats.StatsScreen
 import java.io.File
 
 /** What covers the home screen, if anything. */
 sealed interface Overlay {
     data object AllApps : Overlay
+    data object Stats : Overlay
     data class DockPick(val index: Int) : Overlay
 }
 
@@ -52,6 +54,8 @@ class HomeState(initialTab: ShelfTab) {
     var overlay by mutableStateOf<Overlay?>(null)
     val nav = ShelfNav()
     val appsNav = ShelfNav()
+    /** Pages the stats screen's years (page 0 = the oldest year). */
+    val statsNav = ShelfNav()
 }
 
 /** Everything the home screen asks the activity to do. */
@@ -65,6 +69,7 @@ interface HomeActions {
     fun pictureSettled()
     fun requestStorage()
     fun showAllApps()
+    fun showStats()
     fun pickDock(index: Int)
     fun setDock(index: Int, app: AppEntry)
     fun closeOverlay()
@@ -95,6 +100,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 week = data.week,
                 today = data.today,
                 loaded = data.loaded,
+                onOpenStats = actions::showStats,
                 modifier = Modifier.padding(top = 4.dp),
             )
             NowReading(
@@ -133,6 +139,11 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 nav = state.appsNav,
                 onOpen = actions::openApp,
                 onDetails = actions::appDetails,
+                onDismiss = actions::closeOverlay,
+            )
+            Overlay.Stats -> StatsScreen(
+                data = data,
+                nav = state.statsNav,
                 onDismiss = actions::closeOverlay,
             )
             is Overlay.DockPick -> AppPicker(

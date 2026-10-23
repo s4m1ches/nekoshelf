@@ -43,4 +43,37 @@
     <string name="all_apps">Все приложения</string>
     <string name="apps_empty">Приложений нет</string>
     <string name="close">Закрыть</string>
+
+    <!-- Year stats -->
+    <string name="stats_title">Статистика чтения</string>
+    <string name="stats_year_totals">%1$s стр. · %2$s</string>
+    <string name="stats_manga_backfilled">часть данных — без страниц</string>
+    <string name="stats_manga_none">Манга не установлена</string>
+    <string name="stats_less">меньше</string>
+    <string name="stats_more">больше</string>
+    <string name="stats_prev_year">Предыдущий год</string>
+    <string name="stats_next_year">Следующий год</string>
+    <string-array name="months_short">
+        <item>янв</item>
+        <item>фев</item>
+        <item>мар</item>
+        <item>апр</item>
+        <item>май</item>
+        <item>июн</item>
+        <item>июл</item>
+        <item>авг</item>
+        <item>сен</item>
+        <item>окт</item>
+        <item>ноя</item>
+        <item>дек</item>
+    </string-array>
+    <string-array name="weekdays_short">
+        <item>пн</item>
+        <item></item>
+        <item>ср</item>
+        <item></item>
+        <item>пт</item>
+        <item></item>
+        <item></item>
+    </string-array>
 </resources>

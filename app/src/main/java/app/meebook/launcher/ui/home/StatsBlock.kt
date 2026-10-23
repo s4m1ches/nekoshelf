@@ -2,6 +2,7 @@ package app.meebook.launcher.ui.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.meebook.launcher.R
@@ -33,7 +35,8 @@ private val ZERO = StatsSummary(0, 0, 0, 0)
  * Two outlined blocks side by side, «Книги» and «Манга», each with today's and the total pages
  * and reading time, and under them the week's reading minutes (books + manga, Monday first,
  * today's bar outlined). [manga] null means «Манга» is not installed. Until [loaded] the
- * blocks show only their titles (no premature zeros or empty states).
+ * blocks show only their titles (no premature zeros or empty states). Tapping a block opens the
+ * year heatmap screen ([onOpenStats]).
  */
 @Composable
 fun StatsBlock(
@@ -42,6 +45,7 @@ fun StatsBlock(
     week: List<Pair<LocalDate, Int>>,
     today: LocalDate,
     loaded: Boolean,
+    onOpenStats: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxWidth().padding(horizontal = ScreenPadding)) {
@@ -49,7 +53,7 @@ fun StatsBlock(
             StatCard(
                 stringResource(R.string.stats_books), books ?: ZERO,
                 if (!loaded) "" else null,
-                Modifier.weight(1f).fillMaxHeight(),
+                Modifier.weight(1f).fillMaxHeight().clickable(role = Role.Button, onClick = onOpenStats),
             )
             StatCard(
                 stringResource(R.string.stats_manga), manga ?: ZERO,
@@ -58,7 +62,7 @@ fun StatsBlock(
                     manga == null -> stringResource(R.string.empty_manga)
                     else -> null
                 },
-                Modifier.weight(1f).fillMaxHeight(),
+                Modifier.weight(1f).fillMaxHeight().clickable(role = Role.Button, onClick = onOpenStats),
             )
         }
         WeekBars(week, today, Modifier.padding(top = 4.dp))

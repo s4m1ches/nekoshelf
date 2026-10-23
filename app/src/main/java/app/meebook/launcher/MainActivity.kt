@@ -269,6 +269,12 @@ class MainActivity : ComponentActivity(), HomeActions {
 
     override fun showAllApps() = showApps(Overlay.AllApps)
 
+    override fun showStats() {
+        // Open on the current year (the newest page).
+        state.statsNav.page = Int.MAX_VALUE
+        state.overlay = Overlay.Stats
+    }
+
     override fun pickDock(index: Int) = showApps(Overlay.DockPick(index))
 
     private fun showApps(overlay: Overlay) {
@@ -296,6 +302,7 @@ class MainActivity : ComponentActivity(), HomeActions {
         val nav = when (state.overlay) {
             null -> state.nav
             Overlay.AllApps -> state.appsNav
+            Overlay.Stats -> state.statsNav
             else -> null
         }
         if (nav != null) {

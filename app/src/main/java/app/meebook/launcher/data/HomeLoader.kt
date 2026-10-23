@@ -41,6 +41,11 @@ data class HomeData(
     /** Wall-clock ms the shelf rules are evaluated at. */
     val nowMs: Long,
     val loaded: Boolean,
+    /** Per-day reading for the year heatmaps. */
+    val bookDays: List<DayStat> = emptyList(),
+    val mangaDays: List<DayStat> = emptyList(),
+    /** Some «Манга» days come from the history import (seconds known, no pages). */
+    val mangaBackfilled: Boolean = false,
 ) {
     companion object {
         fun empty(): HomeData = HomeData(
@@ -94,9 +99,11 @@ class HomeLoader(
         var manga: List<Manga> = emptyList()
         var mangaDays: List<DayStat> = emptyList()
         var mangaStats: StatsSummary? = null
+        var mangaBackfilled = false
         if (mangaAvailable) {
             manga = bridge.library()
             mangaDays = bridge.daily()
+            mangaBackfilled = bridge.hasBackfilledDays()
             val (pages, seconds) = bridge.totals()
             val s = StatsCalc.summary(mangaDays, today)
             mangaStats = if (pages > 0 || seconds > 0) s.copy(pagesTotal = pages, secondsTotal = seconds) else s
@@ -132,6 +139,9 @@ class HomeLoader(
             mangaCovers = mangaCoverMap,
             nowMs = nowMs,
             loaded = true,
+            bookDays = bookDays,
+            mangaDays = mangaDays,
+            mangaBackfilled = mangaBackfilled,
         )
     }
 
