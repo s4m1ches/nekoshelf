@@ -117,6 +117,32 @@ class MangaBridgeTest {
         )
     }
 
+    private val contractColumns = arrayOf(
+        "manga_id", "title", "source_name", "date_added", "last_read_at", "chapters_total",
+        "chapters_read", "next_chapter_id", "next_chapter_name", "cover_version", "chapters_new",
+    )
+
+    @Test fun newChaptersColumnIsRead() {
+        val c = MatrixCursor(contractColumns).apply {
+            addRow(arrayOf<Any?>(1L, "Berserk", "Src", 1000L, 5000L, 100, 40, 41L, "Ch. 41", 777L, 4))
+        }
+        assertEquals(listOf(Manga(1, "Berserk", 5000L, 100, 40, "Ch. 41", 1000L, 777L, 4)), readLibrary(c))
+    }
+
+    @Test fun missingColumnMeansZero() {
+        val c = MatrixCursor(contractColumns.copyOf(contractColumns.size - 1)).apply {
+            addRow(arrayOf<Any?>(1L, "Berserk", "Src", 1000L, 5000L, 100, 40, 41L, "Ch. 41", 777L))
+        }
+        assertEquals(listOf(Manga(1, "Berserk", 5000L, 100, 40, "Ch. 41", 1000L, 777L, 0)), readLibrary(c))
+    }
+
+    @Test fun backupStreamsFileOrNull() {
+        assertNull(bridge.backup())
+        val f = tmp.newFile("b.zip").apply { writeBytes(byteArrayOf(9, 8)) }
+        FakeMangaProvider.coverFile = f
+        assertEquals(2, bridge.backup()!!.use { it.readBytes().size })
+    }
+
     @Test fun nullNextChapterNameIsNull() {
         assertNull(bridge.library()[1].nextChapterName)
     }

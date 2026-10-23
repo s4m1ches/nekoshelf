@@ -61,6 +61,8 @@ data class Manga(
     val nextChapterName: String?,
     val dateAdded: Long,
     val coverVersion: Long,
+    /** Chapters fetched after the last read; 0 also when an older «Манга» doesn't report it. */
+    val chaptersNew: Int = 0,
 )
 
 /** One top-level unit on the shelf: a cover (asCover = true) or a spine. */

@@ -38,36 +38,20 @@ class MangaBridge(context: Context, private val retryDelayMs: Long = 300) {
         false
     }
 
-    fun library(): List<Manga> = queryRows("library") { c ->
-        val id = c.getColumnIndexOrThrow("manga_id")
-        val title = c.getColumnIndexOrThrow("title")
-        val added = c.getColumnIndexOrThrow("date_added")
-        val last = c.getColumnIndexOrThrow("last_read_at")
-        val total = c.getColumnIndexOrThrow("chapters_total")
-        val read = c.getColumnIndexOrThrow("chapters_read")
-        val next = c.getColumnIndexOrThrow("next_chapter_name")
-        val cover = c.getColumnIndexOrThrow("cover_version")
-        buildList {
-            while (c.moveToNext()) {
-                add(
-                    Manga(
-                        id = c.getLong(id),
-                        title = c.getString(title).orEmpty(),
-                        lastReadAt = c.getLong(last),
-                        chaptersTotal = c.getInt(total),
-                        chaptersRead = c.getInt(read),
-                        nextChapterName = if (c.isNull(next)) null else c.getString(next),
-                        dateAdded = c.getLong(added),
-                        coverVersion = c.getLong(cover),
-                    ),
-                )
-            }
-        }
-    } ?: emptyList()
+    fun library(): List<Manga> = queryRows("library", ::readLibrary) ?: emptyList()
 
     /** Cached cover image, or null when none is cached / the bridge is unavailable. Caller closes. */
     fun cover(mangaId: Long): InputStream? = withRetry {
         resolver.openFileDescriptor(Uri.parse("content://$AUTHORITY/cover/$mangaId"), "r")
+            ?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
+    }
+
+    /**
+     * A full «Манга» backup stream (the provider builds it synchronously, which can take seconds),
+     * or null when unavailable / the provider is too old. Caller closes; keep it off the main thread.
+     */
+    fun backup(): InputStream? = withRetry {
+        resolver.openFileDescriptor(Uri.parse("content://$AUTHORITY/backup"), "r")
             ?.let { ParcelFileDescriptor.AutoCloseInputStream(it) }
     }
 
@@ -140,5 +124,35 @@ class MangaBridge(context: Context, private val retryDelayMs: Long = 300) {
         const val PACKAGE = "app.komikku.meebook"
         const val AUTHORITY = "app.komikku.meebook.bridge"
         const val PERMISSION = "app.komikku.meebook.permission.BRIDGE"
+    }
+}
+
+/** Maps the `library` cursor; `chapters_new` is optional (older «Манга» lacks it) and reads as 0. */
+internal fun readLibrary(c: Cursor): List<Manga> {
+    val id = c.getColumnIndexOrThrow("manga_id")
+    val title = c.getColumnIndexOrThrow("title")
+    val added = c.getColumnIndexOrThrow("date_added")
+    val last = c.getColumnIndexOrThrow("last_read_at")
+    val total = c.getColumnIndexOrThrow("chapters_total")
+    val read = c.getColumnIndexOrThrow("chapters_read")
+    val next = c.getColumnIndexOrThrow("next_chapter_name")
+    val cover = c.getColumnIndexOrThrow("cover_version")
+    val new = c.getColumnIndex("chapters_new")
+    return buildList {
+        while (c.moveToNext()) {
+            add(
+                Manga(
+                    id = c.getLong(id),
+                    title = c.getString(title).orEmpty(),
+                    lastReadAt = c.getLong(last),
+                    chaptersTotal = c.getInt(total),
+                    chaptersRead = c.getInt(read),
+                    nextChapterName = if (c.isNull(next)) null else c.getString(next),
+                    dateAdded = c.getLong(added),
+                    coverVersion = c.getLong(cover),
+                    chaptersNew = if (new < 0) 0 else c.getInt(new),
+                ),
+            )
+        }
     }
 }

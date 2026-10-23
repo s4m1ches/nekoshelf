@@ -226,20 +226,35 @@ private fun MangaOnShelf(item: MangaItem, slotW: Dp, bookH: Dp, covers: Map<Long
     if (item.asCover) {
         CoverOnShelf(slotW, bookH, onClick = { onManga(m) }) {
             CoverImage(covers[m.id], m.title, slotW * COVER_SLOTS - 3.dp, bookH)
-            if (item.caughtUp) {
-                Box(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black).padding(vertical = 2.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(stringResource(R.string.caught_up), style = serif(9f, bold = true, color = Color.White), maxLines = 1)
+            Column(Modifier.align(Alignment.BottomCenter)) {
+                if (item.caughtUp) {
+                    Box(Modifier.fillMaxWidth().background(Color.Black).padding(vertical = 2.dp), contentAlignment = Alignment.Center) {
+                        Text(stringResource(R.string.caught_up), style = serif(9f, bold = true, color = Color.White), maxLines = 1)
+                    }
+                } else {
+                    val f = if (m.chaptersTotal > 0) m.chaptersRead.toFloat() / m.chaptersTotal else 0f
+                    ProgressBar(f, Modifier.padding(4.dp), height = 5.dp)
                 }
-            } else {
-                val f = if (m.chaptersTotal > 0) m.chaptersRead.toFloat() / m.chaptersTotal else 0f
-                ProgressBar(f, Modifier.align(Alignment.BottomCenter).padding(4.dp), height = 5.dp)
+                if (m.chaptersNew > 0) NewChaptersStrip(stringResource(R.string.new_chapters_cover, m.chaptersNew))
             }
         }
     } else {
-        Spine(m.title, slotW, bookH, onClick = { onManga(m) })
+        Spine(
+            m.title, slotW, bookH, onClick = { onManga(m) },
+            badge = if (m.chaptersNew > 0) stringResource(R.string.new_chapters_spine, m.chaptersNew) else null,
+        )
+    }
+}
+
+/** White strip with a black top rule: «new chapters» on a cover or spine. */
+@Composable
+private fun NewChaptersStrip(text: String, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().background(Color.White)) {
+        Box(Modifier.fillMaxWidth().height(2.dp).background(Color.Black))
+        Text(
+            text, style = serif(9f, bold = true), maxLines = 1, textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        )
     }
 }
 
@@ -253,9 +268,9 @@ private fun CoverOnShelf(slotW: Dp, bookH: Dp, onClick: () -> Unit, content: @Co
 
 private val SPINE_SHADES = listOf(Color(0xFF2A2A2A), Color(0xFF474747), Color(0xFF1C1C1C), Color(0xFF3A3A3A))
 
-/** A spine: a dark band of slightly varying height with the title running top to bottom. */
+/** A spine: a dark band of slightly varying height with the title running top to bottom; [badge] is a «+N» strip at its foot. */
 @Composable
-private fun Spine(title: String, slotW: Dp, bookH: Dp, onClick: () -> Unit) {
+private fun Spine(title: String, slotW: Dp, bookH: Dp, onClick: () -> Unit, badge: String? = null) {
     val h = (title.hashCode() and 0x7fffffff)
     val height = bookH * (0.86f + (h % 15) / 100f)
     val shade = SPINE_SHADES[(h / 15) % SPINE_SHADES.size]
@@ -273,8 +288,9 @@ private fun Spine(title: String, slotW: Dp, bookH: Dp, onClick: () -> Unit) {
             style = serif(10.5f, color = Color.White),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp, bottom = 6.dp).verticalText(),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp, bottom = if (badge != null) 22.dp else 6.dp).verticalText(),
         )
+        if (badge != null) NewChaptersStrip(badge, Modifier.align(Alignment.BottomCenter))
     }
 }
 

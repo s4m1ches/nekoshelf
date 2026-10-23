@@ -30,6 +30,8 @@
     <string name="tab_manga">Манга</string>
     <string name="tab_all">Всё</string>
     <string name="caught_up">всё прочитано</string>
+    <string name="new_chapters_cover">новых глав: %d</string>
+    <string name="new_chapters_spine">+%d</string>
     <string name="pager">%1$d / %2$d</string>
     <string name="pager_prev">Предыдущая страница</string>
     <string name="pager_next">Следующая страница</string>
