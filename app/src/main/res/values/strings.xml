@@ -41,5 +41,6 @@
     <!-- Apps -->
     <string name="dock_pick">Выберите приложение для дока</string>
     <string name="all_apps">Все приложения</string>
+    <string name="apps_empty">Приложений нет</string>
     <string name="close">Закрыть</string>
 </resources>

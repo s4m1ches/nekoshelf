@@ -30,6 +30,7 @@ import app.meebook.launcher.domain.Book
 import app.meebook.launcher.domain.Manga
 import app.meebook.launcher.domain.ShelfBuilder
 import app.meebook.launcher.domain.ShelfTab
+import app.meebook.launcher.ui.apps.AllAppsScreen
 import java.io.File
 
 /** What covers the home screen, if anything. */
@@ -50,6 +51,7 @@ class HomeState(initialTab: ShelfTab) {
     var tab by mutableStateOf(initialTab)
     var overlay by mutableStateOf<Overlay?>(null)
     val nav = ShelfNav()
+    val appsNav = ShelfNav()
 }
 
 /** Everything the home screen asks the activity to do. */
@@ -57,6 +59,7 @@ interface HomeActions {
     fun openBook(book: Book)
     fun openManga(manga: Manga)
     fun openApp(app: AppEntry)
+    fun appDetails(app: AppEntry)
     fun selectTab(tab: ShelfTab)
     fun fullRefresh()
     fun pictureSettled()
@@ -125,10 +128,11 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
         }
         when (val o = state.overlay) {
             null -> Unit
-            Overlay.AllApps -> AppPicker(
-                title = stringResource(R.string.all_apps),
+            Overlay.AllApps -> AllAppsScreen(
                 apps = state.allApps,
-                onPick = actions::openApp,
+                nav = state.appsNav,
+                onOpen = actions::openApp,
+                onDetails = actions::appDetails,
                 onDismiss = actions::closeOverlay,
             )
             is Overlay.DockPick -> AppPicker(

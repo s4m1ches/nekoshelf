@@ -304,7 +304,7 @@ private fun Modifier.verticalText(): Modifier = layout { measurable, constraints
 }
 
 @Composable
-private fun Pager(nav: ShelfNav, modifier: Modifier = Modifier) {
+internal fun Pager(nav: ShelfNav, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
         PagerArrow("‹", nav.page > 0, stringResource(R.string.pager_prev)) { nav.prev() }
         Text(

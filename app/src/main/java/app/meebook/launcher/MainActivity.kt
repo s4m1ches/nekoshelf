@@ -1,8 +1,10 @@
 package app.meebook.launcher
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.ContentObserver
@@ -49,7 +51,7 @@ import kotlin.coroutines.resume
  * The HOME activity. Every onStart (each return to the home screen) it picks the next header
  * picture and decor, reloads books / manga / stats on Dispatchers.IO and, once that content is
  * on screen, does exactly one e-ink full refresh. While started it listens to «Манга» changes.
- * Hardware page keys page the shelf.
+ * Hardware page keys page the shelf (or the app grid while all apps is open).
  */
 class MainActivity : ComponentActivity(), HomeActions {
     private lateinit var prefs: SharedPreferences
@@ -60,6 +62,7 @@ class MainActivity : ComponentActivity(), HomeActions {
     private lateinit var state: HomeState
 
     private var observer: ContentObserver? = null
+    private var packageReceiver: BroadcastReceiver? = null
     private var startJob: Job? = null
     private var quietJob: Job? = null
     private var pictureSettled: CompletableDeferred<Unit>? = null
@@ -99,10 +102,13 @@ class MainActivity : ComponentActivity(), HomeActions {
             autoAsked = true
             askStorage(fromCard = false)
         }
+        registerPackageReceiver()
         refresh(newPicture = true, fullRefresh = true)
     }
 
     override fun onStop() {
+        packageReceiver?.let { runCatching { unregisterReceiver(it) } }
+        packageReceiver = null
         observer?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         observer = null
         super.onStop()
@@ -165,6 +171,30 @@ class MainActivity : ComponentActivity(), HomeActions {
         }
     }
 
+    /**
+     * An app was installed / removed / changed: rebuild the all-apps list (if it is open) and the
+     * dock. Dynamic receiver; system broadcasts need the exported form on Android 11.
+     */
+    private fun registerPackageReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                lifecycleScope.launch {
+                    val (list, dock) = withContext(Dispatchers.IO) { apps.all() to apps.dockSlots() }
+                    state.allApps = list
+                    state.dock = dock
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        registerReceiver(receiver, filter)
+        packageReceiver = receiver
+    }
+
     private fun nextDecor(): String {
         val all = catgirlDecors(assets)
         if (all.isEmpty()) return ""
@@ -215,6 +245,16 @@ class MainActivity : ComponentActivity(), HomeActions {
         Launch.openApp(this, app.pkg)
     }
 
+    /** Long-press in all apps: the app's system details page (uninstall, storage, permissions). */
+    override fun appDetails(app: AppEntry) {
+        runCatching {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", app.pkg, null))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure { Log.w(TAG, "app details for ${app.pkg}", it) }
+    }
+
     override fun selectTab(tab: ShelfTab) {
         state.tab = tab
         state.nav.page = 0
@@ -232,6 +272,7 @@ class MainActivity : ComponentActivity(), HomeActions {
     override fun pickDock(index: Int) = showApps(Overlay.DockPick(index))
 
     private fun showApps(overlay: Overlay) {
+        if (overlay == Overlay.AllApps) state.appsNav.page = 0
         state.overlay = overlay
         lifecycleScope.launch {
             state.allApps = withContext(Dispatchers.IO) { apps.all() }
@@ -252,7 +293,12 @@ class MainActivity : ComponentActivity(), HomeActions {
 
     /** Page keys, volume keys and DPAD left/right page the shelf while the home screen is shown. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (state.overlay == null) {
+        val nav = when (state.overlay) {
+            null -> state.nav
+            Overlay.AllApps -> state.appsNav
+            else -> null
+        }
+        if (nav != null) {
             val forward = when (event.keyCode) {
                 KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, HAOQING_PAGE_DOWN -> true
                 KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_DPAD_LEFT, HAOQING_PAGE_UP -> false
@@ -260,7 +306,7 @@ class MainActivity : ComponentActivity(), HomeActions {
             }
             if (forward != null) {
                 if (event.action == KeyEvent.ACTION_DOWN) {
-                    if (forward) state.nav.next() else state.nav.prev()
+                    if (forward) nav.next() else nav.prev()
                 }
                 return true
             }
