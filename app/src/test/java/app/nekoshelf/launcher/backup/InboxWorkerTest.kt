@@ -205,4 +205,17 @@ class InboxWorkerTest {
         assertTrue(store.load().inboxNeedsReauth)
         assertEquals(INBOX_ERROR_NO_ACCESS, store.load().inboxError)
     }
+
+    @Test
+    fun offlineOrTokenHiccupRunKeepsNeedsReauth() {
+        bookOnDrive()
+        store.update { it.copy(inboxNeedsReauth = true) }
+        drive.failListTree = java.net.SocketTimeoutException("timeout")
+        runWorker(manual = true)
+        assertTrue(store.load().inboxNeedsReauth)
+        drive.failListTree = TokenUnavailableException("Google Play services timed out", null)
+        runWorker(manual = true)
+        assertTrue(store.load().inboxNeedsReauth)
+        assertEquals(BACKUP_ERROR_NO_NETWORK, store.load().inboxError)
+    }
 }

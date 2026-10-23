@@ -96,11 +96,13 @@ class InboxRunner(
         val now = clock()
         val pass = Pass(hadBackup = start.lastSuccessAt != null)
         var authLost = false
+        var reachedDrive = true // false when a network or token failure says nothing about access
         val fatal = try {
             pass.check()
             null
         } catch (e: Exception) {
             authLost = e is DriveAuthException
+            reachedDrive = e is InboxFailure || e is DriveException
             inboxErrorText(e)
         }
         val error = fatal ?: pass.firstError ?: if (pass.lowSpace) INBOX_ERROR_LOW_SPACE else null
@@ -111,7 +113,8 @@ class InboxRunner(
                 inboxLastCheckAt = now,
                 inboxReceived = pass.received,
                 inboxError = error,
-                inboxNeedsReauth = authLost, // a run that got through proves access is back
+                // A run that reached Drive without a sign-in failure proves access is back.
+                inboxNeedsReauth = if (authLost) true else if (reachedDrive) false else cur.inboxNeedsReauth,
             )
         }
         return InboxResult(pass.received, pass.skipped, error)
