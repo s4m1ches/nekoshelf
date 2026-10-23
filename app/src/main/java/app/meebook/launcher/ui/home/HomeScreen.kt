@@ -76,6 +76,8 @@ interface HomeActions {
     fun pickDock(index: Int)
     fun setDock(index: Int, app: AppEntry)
     fun closeOverlay()
+    /** The header clock ticked (once a minute while started). */
+    fun clockTick()
 }
 
 /**
@@ -94,6 +96,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 onRefresh = actions::fullRefresh,
                 onPictureSettled = actions::pictureSettled,
                 onAbout = actions::showAbout,
+                onTick = actions::clockTick,
             )
             if (state.needsPermission) {
                 PermissionCard(actions::requestStorage, Modifier.padding(top = 6.dp))

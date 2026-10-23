@@ -111,6 +111,7 @@ fun Header(
     modifier: Modifier = Modifier,
     onPictureSettled: () -> Unit = {},
     onAbout: () -> Unit = {},
+    onTick: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -126,6 +127,7 @@ fun Header(
                 wifiOn = toggles.wifiOn()
                 lightOn = toggles.lightOn()
                 battery = toggles.battery()
+                onTick()
                 // Wake just after the next minute boundary. Not an animation: one redraw a minute.
                 delay(60_000L - System.currentTimeMillis() % 60_000L + 200L)
             }

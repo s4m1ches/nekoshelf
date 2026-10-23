@@ -16,6 +16,7 @@ import android.util.Log
 import android.view.Choreographer
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
@@ -31,6 +32,7 @@ import app.meebook.launcher.device.StorageAccess
 import app.meebook.launcher.device.Toggles
 import app.meebook.launcher.domain.Book
 import app.meebook.launcher.domain.Manga
+import app.meebook.launcher.domain.RefreshGuard
 import app.meebook.launcher.domain.ShelfTab
 import app.meebook.launcher.ui.home.HomeActions
 import app.meebook.launcher.ui.home.HomeScreen
@@ -47,6 +49,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.time.LocalDate
 import kotlin.coroutines.resume
 
 /**
@@ -91,6 +94,13 @@ class MainActivity : ComponentActivity(), HomeActions {
         pictures = HeaderPictures(File(Environment.getExternalStorageDirectory(), "Pictures"), prefs)
         val tab = runCatching { ShelfTab.valueOf(prefs.getString(PREF_TAB, null) ?: "") }.getOrDefault(ShelfTab.ALL)
         state = HomeState(tab)
+        // Back on the bare home screen must not finish the HOME activity (Android 11 would, and
+        // the recreated launcher loses its memos and flashes again): reset to the first page.
+        // Registered before setContent so the overlays' Compose BackHandlers (added later) win.
+        onBackPressedDispatcher.addCallback(this) {
+            state.overlay = null
+            state.nav.page = 0
+        }
         setContent {
             EinkTheme { HomeScreen(state, toggles, this) }
         }
@@ -141,48 +151,73 @@ class MainActivity : ComponentActivity(), HomeActions {
             val oldPicture = state.picture
             val settled = CompletableDeferred<Unit>()
             pictureSettled = settled
-            // Data and picture in parallel: the load starts at once on IO, without waiting for the
-            // picture pick or for the main thread (busy with the first frame on a cold start), and
-            // runs while Coil decodes the picture (≈2 s for a big JPEG on a cold start). The load
-            // hands over the books phase first, so a slow «Манга» never holds the books back.
-            val booksPhase = CompletableDeferred<HomeData>()
-            val load = async(Dispatchers.IO) {
-                try {
-                    loader.load(onBooks = { booksPhase.complete(it) })
-                } catch (e: Throwable) {
-                    booksPhase.completeExceptionally(e)
-                    throw e
+            var drawn = false
+            var flashed = false
+            // At most one full refresh per return, and none once the user has left home (a flash
+            // then would hit the next app's first frame).
+            fun flash() {
+                flashed = true
+                if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) Eink.fullRefresh(this@MainActivity)
+            }
+            val ok = RefreshGuard.run(onFailure = { Log.e(TAG, "refresh failed; keeping the previous data", it) }) {
+                // Data and picture in parallel: the load starts at once on IO, without waiting for the
+                // picture pick or for the main thread (busy with the first frame on a cold start), and
+                // runs while Coil decodes the picture (≈2 s for a big JPEG on a cold start). The load
+                // hands over the books phase first, so a slow «Манга» never holds the books back.
+                val booksPhase = CompletableDeferred<HomeData>()
+                val load = async(Dispatchers.IO) {
+                    try {
+                        loader.load(onBooks = { booksPhase.complete(it) })
+                    } catch (e: Throwable) {
+                        booksPhase.completeExceptionally(e)
+                        throw e
+                    }
+                }
+                val dock = async(Dispatchers.IO) { apps.dockSlots() }
+                // The picture pick (bounds + EXIF of every file) runs beside the load; the books
+                // are published without waiting for it.
+                val pictureJob = async(Dispatchers.IO) { if (newPicture) pictures.next() else oldPicture }
+                state.data = booksPhase.await()
+                drawn = true
+                state.dock = dock.await()
+                val booksAt = System.nanoTime()
+                Log.i(TAG, "books in ${(booksAt - t0) / 1_000_000} ms")
+                val picture = pictureJob.await()
+                state.picture = picture
+                if (!fullRefresh) {
+                    state.data = load.await()
+                    return@run
+                }
+                // Wait until the new picture is drawn (or failed), then for that frame to be posted:
+                // the full refresh must flash the new content, not the app we came back from.
+                val waited = picture != null && picture != oldPicture
+                val inTime = !waited || withTimeoutOrNull(2_500) { settled.await() } != null
+                // Give «Манга» up to MANGA_WAIT_MS after the books phase to land in the same refreshed
+                // frame (a warm provider answers in 0.25–0.5 s); a cold one merges later, unflashed.
+                val waitLeft = MANGA_WAIT_MS - (System.nanoTime() - booksAt) / 1_000_000
+                val full = if (load.isCompleted) load.await() else if (waitLeft > 0) withTimeoutOrNull(waitLeft) { load.await() } else null
+                if (full != null) state.data = full
+                awaitFrameDrawn()
+                awaitFrameDrawn()
+                Log.i(TAG, "home ready in ${(System.nanoTime() - t0) / 1_000_000} ms (picture settled: $inTime, manga: ${full != null}); full refresh")
+                flash()
+                if (full == null) {
+                    state.data = load.await()
+                    Log.i(TAG, "manga merged in ${(System.nanoTime() - t0) / 1_000_000} ms (after the full refresh)")
                 }
             }
-            val dock = async(Dispatchers.IO) { apps.dockSlots() }
-            val picture = if (newPicture) withContext(Dispatchers.IO) { pictures.next() } else oldPicture
-            state.picture = picture
-            state.data = booksPhase.await()
-            state.dock = dock.await()
-            val booksAt = System.nanoTime()
-            Log.i(TAG, "books in ${(booksAt - t0) / 1_000_000} ms")
-            if (!fullRefresh) {
-                state.data = load.await()
-                return@launch
-            }
-            // Wait until the new picture is drawn (or failed), then for that frame to be posted:
-            // the full refresh must flash the new content, not the app we came back from.
-            val waited = picture != null && picture != oldPicture
-            val inTime = !waited || withTimeoutOrNull(2_500) { settled.await() } != null
-            // Give «Манга» up to MANGA_WAIT_MS after the books phase to land in the same refreshed
-            // frame (a warm provider answers in 0.25–0.5 s); a cold one merges later, unflashed.
-            val waitLeft = MANGA_WAIT_MS - (System.nanoTime() - booksAt) / 1_000_000
-            val full = if (load.isCompleted) load.await() else if (waitLeft > 0) withTimeoutOrNull(waitLeft) { load.await() } else null
-            if (full != null) state.data = full
-            awaitFrameDrawn()
-            awaitFrameDrawn()
-            Log.i(TAG, "home ready in ${(System.nanoTime() - t0) / 1_000_000} ms (picture settled: $inTime, manga: ${full != null}); full refresh")
-            Eink.fullRefresh(this@MainActivity)
-            if (full == null) {
-                state.data = load.await()
-                Log.i(TAG, "manga merged in ${(System.nanoTime() - t0) / 1_000_000} ms (after the full refresh)")
+            if (!ok && fullRefresh && drawn && !flashed) {
+                awaitFrameDrawn()
+                awaitFrameDrawn()
+                flash()
             }
         }
+    }
+
+    /** The clock's minute tick: if midnight passed while home stayed shown, reload quietly. */
+    override fun clockTick() {
+        val d = state.data
+        if (d.loaded && RefreshGuard.dayChanged(d.today, LocalDate.now())) quietRefresh()
     }
 
     /** «Манга» changed while we are started: reload data only (no new picture, no flash). */
