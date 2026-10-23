@@ -491,12 +491,18 @@ class InboxRunnerTest {
         assertTrue(drive.nodes.isEmpty())
     }
 
-    @Test fun twoBooksFoldersReportAnError() {
+    @Test fun twoBooksFoldersAreMergedNotAnError() {
         val second = drive.putFolder(root, "books")
-        userFile(second, "a.epub")
+        userFile(books, "a.epub", "A")
+        mirrorFile(second, "copy.epub")
+        userFile(second, "b.epub", "B")
 
-        assertEquals("в папке Nekoshelf несколько папок books", run().error)
-        assertFalse(local("a.epub").exists())
+        val r = run()
+
+        assertEquals(InboxResult(2, 0, null), r)
+        assertEquals("A", local("a.epub").readText())
+        assertEquals("B", local("b.epub").readText())
+        assertFalse(local("copy.epub").exists())
     }
 
     @Test fun filesInHiddenFoldersAreSkipped() {

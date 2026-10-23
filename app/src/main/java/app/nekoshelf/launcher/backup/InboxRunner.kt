@@ -21,7 +21,6 @@ const val INBOX_ERROR_NO_ACCESS = "нет доступа к Диску — вк�
 const val INBOX_ERROR_LOW_SPACE = "мало места"
 private const val INBOX_ERROR_OTHER = "не удалось получить книгу с Диска"
 const val INBOX_ERROR_NO_ROOT = "на Диске нет папки Nekoshelf"
-const val INBOX_ERROR_MANY_BOOKS = "в папке Nekoshelf несколько папок books"
 const val INBOX_ERROR_BAD_NAME = "у книги на Диске слишком длинное или недопустимое имя"
 
 /** A download is skipped (and retried later) when it would leave less free space than this. */
@@ -143,8 +142,7 @@ class InboxRunner(
         fun check() {
             val root = backupRoot() ?: return
             val books = drive.findChildren(root.id, DRIVE_BOOKS).filter { it.isFolder() }
-            if (books.size > 1) throw InboxFailure(INBOX_ERROR_MANY_BOOKS)
-            val booksId = books.singleOrNull()?.id ?: return
+            if (books.isEmpty()) return
 
             val onDrive = HashSet<String>()
             val onDrivePaths = HashMap<String, Long>()
@@ -167,7 +165,8 @@ class InboxRunner(
             if (paths != localPaths) store.addInboxReceivedPaths(account, paths)
 
             val home = homeDir()
-            val tree = drive.listTree(booksId)
+            // The owner's own `books` and the app-made one can sit side by side; app copies are excluded below.
+            val tree = books.flatMap { drive.listTree(it.id) }.distinctBy { it.file.id }
             fillInReceivedPaths(tree, home)
             val candidates = inboxCandidates(tree, seen)
             sweepStaleParts(candidates.mapNotNull { resolveInside(home, it.relativePath)?.parentFile }.toSet())
