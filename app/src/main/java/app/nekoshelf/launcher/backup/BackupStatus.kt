@@ -33,6 +33,9 @@ data class BackupStatus(
      * checkbox on again ([BackupStore.inboxEnabled]).
      */
     val inboxNeedsReauth: Boolean = false,
+    /** How many books the last inbox check that brought any brought (0: none ever), and when ([inboxLastReceivedAt]). */
+    val inboxLastReceived: Int = 0,
+    val inboxLastReceivedAt: Long? = null,
 ) {
     companion object {
         val EMPTY = BackupStatus(
@@ -56,6 +59,8 @@ data class BackupStatus(
             inboxReceived = 0,
             inboxError = null,
             inboxNeedsReauth = false,
+            inboxLastReceived = 0,
+            inboxLastReceivedAt = null,
         )
     }
 }

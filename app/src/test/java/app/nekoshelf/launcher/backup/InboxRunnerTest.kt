@@ -538,4 +538,146 @@ class InboxRunnerTest {
         store.saveInboxSeen(setOf("a", "b"))
         assertEquals(setOf("a", "b"), BackupStore(ApplicationProvider.getApplicationContext()).inboxSeen())
     }
+
+    // ---- received paths (ruling I9) --------------------------------------------------------------
+
+    private fun pathsOnDrive(): Map<String, Long> {
+        val f = drive.nodes.values.single { it.parent == root && it.name == "inbox-seen.json" }
+        return receivedPathsOf(JSONObject(String(f.bytes)))
+    }
+
+    private fun receivedPaths() = store.inboxReceivedPaths("owner@example.com")
+
+    @Test fun receivedAndExistingPathsAreRecordedLocallyAndOnDrive() {
+        userFile(drive.folder("Серия", books), "Том 1.epub", "том")
+        local("own.epub").writeText("mine")
+        userFile(books, "own.epub", "the owner's, 22 bytes.")
+
+        val r = run()
+
+        assertEquals(InboxResult(received = 1, skippedExisting = 1, error = null), r)
+        val expected = mapOf("Серия/Том 1.epub" to 6L, "own.epub" to 22L)
+        assertEquals(expected, receivedPaths())
+        assertEquals(expected, pathsOnDrive())
+    }
+
+    @Test fun receivedPathsFromDriveAndLocalAreMerged() {
+        val f = File(tmp.root, "seen.json")
+        f.writeText(JSONObject().put("ids", JSONArray(listOf("x"))).put("paths", receivedPathsJson(mapOf("old/a.epub" to 5L))).toString())
+        drive.upload(root, "inbox-seen.json", f, mapOf("kind" to "inbox-seen"), null)
+        store.addInboxReceivedPaths("owner@example.com", mapOf("local.epub" to 7L))
+        userFile(books, "new.epub", "n")
+
+        run()
+
+        val expected = mapOf("old/a.epub" to 5L, "local.epub" to 7L, "new.epub" to 1L)
+        assertEquals(expected, receivedPaths())
+        assertEquals(expected, pathsOnDrive())
+        assertEquals(setOf("x", drive.nodes.values.single { it.name == "new.epub" }.id), seenOnDrive())
+    }
+
+    @Test fun booksReceivedBeforePathsWereRecordedAreFilledIn() {
+        // Received by a build that kept only the ids.
+        val id = userFile(books, "a.epub", "AAA")
+        local("a.epub").writeText("AAA")
+        val gone = userFile(books, "deleted.epub", "D")
+        store.saveInboxSeen(setOf(id, gone))
+
+        val r = run()
+
+        assertEquals(InboxResult(0, 0, null), r)
+        assertEquals(mapOf("a.epub" to 3L), receivedPaths()) // deleted.epub is not on the reader: nothing to protect
+        assertEquals(mapOf("a.epub" to 3L), pathsOnDrive())
+    }
+
+    @Test fun pathsNeverWrittenWhenNothingChanged() {
+        userFile(books, "a.epub")
+        run()
+        drive.uploads.clear()
+
+        run()
+
+        assertEquals(emptyList<String>(), drive.uploads)
+    }
+
+    // ---- small fixes ---------------------------------------------------------------------------
+
+    @Test fun freeSpaceIsMeasuredOnTheFirstExistingFolder() {
+        home = File(tmp.root, "missing/Books") // not made yet: its own usable space reads 0
+        val measured = ArrayList<File>()
+        val r = InboxRunner(drive, store, { home }, { measured += it; if (it.exists()) Long.MAX_VALUE else 0L }, { now })
+        userFile(books, "a.epub", "A")
+
+        assertEquals(InboxResult(1, 0, null), r.run())
+
+        assertEquals("A", local("a.epub").readText())
+        assertTrue(measured.all { it.exists() })
+        assertEquals(tmp.root.canonicalFile, measured.first().canonicalFile)
+    }
+
+    @Test fun cutOffDownloadIsNotSeenAndLeavesNothing() {
+        val id = userFile(books, "a.epub", "the whole book")
+        drive.serveBytes[id] = "the wh".toByteArray()
+
+        val r = run()
+
+        assertEquals(InboxResult(0, 0, "не удалось получить книгу с Диска"), r)
+        assertFalse(local("a.epub").exists())
+        assertEquals(emptyList<String>(), home.list()!!.toList())
+        assertTrue(id !in store.inboxSeen())
+        assertEquals(emptyMap<String, Long>(), receivedPaths())
+
+        drive.serveBytes.clear()
+        assertEquals(InboxResult(1, 0, null), run())
+        assertEquals("the whole book", local("a.epub").readText())
+    }
+
+    @Test fun tooLongNameIsSkippedSeenAndReportedOnce() {
+        val long = "я".repeat(126) + ".epub" // 257 UTF-8 bytes
+        val id = userFile(books, long)
+        val inLongFolder = userFile(drive.folder("п".repeat(128), books), "ok.epub")
+        userFile(books, "fine.epub", "F")
+
+        val r = run()
+
+        assertEquals(InboxResult(1, 0, INBOX_ERROR_BAD_NAME), r)
+        assertTrue(id !in drive.downloads)
+        assertTrue(inLongFolder !in drive.downloads)
+        assertTrue(id in store.inboxSeen())
+        assertTrue(inLongFolder in store.inboxSeen())
+        assertEquals(listOf("fine.epub"), home.list()!!.toList())
+
+        assertEquals(InboxResult(0, 0, null), run())
+    }
+
+    @Test fun nameTheFileSystemRefusesIsSkippedSeenAndReportedOnce() {
+        // NTFS refuses '?' (an SD card's FAT does too); ext4 would take it, so this runs on Windows only.
+        org.junit.Assume.assumeTrue(File.separatorChar == '\\')
+        val id = userFile(books, "Что дальше?.epub")
+        userFile(books, "fine.epub", "F")
+
+        val r = run()
+
+        assertEquals(InboxResult(1, 0, INBOX_ERROR_BAD_NAME), r)
+        assertTrue(id !in drive.downloads)
+        assertTrue(id in store.inboxSeen())
+        assertEquals(listOf("fine.epub"), home.list()!!.toList())
+        assertEquals(InboxResult(0, 0, null), run())
+    }
+
+    @Test fun lastNonZeroResultIsKept() {
+        userFile(books, "a.epub")
+        userFile(books, "b.epub")
+        run()
+        val first = now
+        now += 3_600_000
+
+        run()
+
+        val s = store.load()
+        assertEquals(0, s.inboxReceived)
+        assertEquals(now, s.inboxLastCheckAt)
+        assertEquals(2, s.inboxLastReceived)
+        assertEquals(first, s.inboxLastReceivedAt)
+    }
 }

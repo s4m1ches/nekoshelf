@@ -5,7 +5,11 @@ import app.nekoshelf.launcher.backup.drive.RemoteFile
 
 const val INBOX_ERROR_MANY_ROOTS = "на Диске несколько папок Nekoshelf"
 
-/** App-created file in the `Nekoshelf` root: `{"ids":[…],"updated":<ms>}`, the seen set that survives a reader wipe. */
+/**
+ * App-created file in the `Nekoshelf` root: `{"ids":[…],"paths":[{"path":…,"size":…}],"updated":<ms>}`,
+ * the seen set and the received paths that survive a reader wipe (files written before paths were
+ * kept have no `paths`).
+ */
 internal const val INBOX_SEEN_FILE = "inbox-seen.json"
 internal const val KIND_INBOX_SEEN = "inbox-seen"
 

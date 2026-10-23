@@ -499,6 +499,7 @@ class BackupControllerTest {
         dropAppCopy("a.epub")
         fake.put(booksFolder(), "a.epub", "aaaa".toByteArray())
         File(home, "a.epub").delete()
+        store.saveInboxSeen(setOf("u-old")) // the inbox was used here once
         open()
         runnerReadonly.clear()
         controller.confirmRestore(); idle()
@@ -515,6 +516,25 @@ class BackupControllerTest {
         runnerReadonly.clear()
         controller.confirmRestore(); idle()
         assertTrue("no readonly token for the restore", runnerReadonly.isNotEmpty() && runnerReadonly.all { it == null })
+        assertEquals("Восстановлено, но не удалось: 1 — включите \"Забирать новые книги\" и повторите", state.backupUi.message)
+    }
+
+    @Test fun restoreWithoutAnyInboxHistoryKeepsThePlainPartialText() {
+        // Never used the inbox: turning it on would not bring the book back.
+        dropAppCopy("a.epub")
+        File(home, "a.epub").delete()
+        open()
+        controller.confirmRestore(); idle()
+        assertEquals("Восстановлено, но не удалось: 1", state.backupUi.message)
+    }
+
+    @Test fun restoreOnAWipedReaderWithASeenFileOnDriveSaysToTurnItOn() {
+        dropAppCopy("a.epub")
+        File(home, "a.epub").delete()
+        val root = fake.nodes.values.single { it.folder && it.name == "Nekoshelf" }.id
+        fake.upload(root, "inbox-seen.json", File(tmp.root, "s.json").apply { writeText("""{"ids":["u1"]}""") }, mapOf("kind" to "inbox-seen"), null)
+        open()
+        controller.confirmRestore(); idle()
         assertEquals("Восстановлено, но не удалось: 1 — включите \"Забирать новые книги\" и повторите", state.backupUi.message)
     }
 

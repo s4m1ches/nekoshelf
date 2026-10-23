@@ -99,16 +99,18 @@ fun koreaderHomeDir(): File = KoreaderPaths(koreaderRoot()).homeDir()
  * call.
  *
  * [readonlyToken] (drive.file + drive.readonly; non-null only while the inbox checkbox is on and the
- * grant was given) adds the inbox step and the readonly view: the backup's Drive then asks it first
- * ([ReadonlyFallbackToken]: should it stop giving one mid-run, [token] carries on so a lost grant
- * never fails the backup, and the runner uploads no books for that run), and the inbox's own Drive
- * asks only it (none → [DriveAuthException], the inbox's error).
+ * grant was given) adds the inbox step and the readonly view: the backup's lookups of the root and
+ * the owner's files then ask it first ([ReadonlyFallbackToken]: should it stop giving one mid-run,
+ * [token] carries on so a lost grant never fails the backup; that is the inbox's error), and the
+ * inbox's own Drive asks only it (none → [DriveAuthException], the inbox's error). Upload folders,
+ * uploads and deletes always go on [token] (ruling I10, the runner's `appDrive`).
  */
 fun backupRunner(app: Context, store: BackupStore, token: () -> String?, readonlyToken: (() -> String?)? = null): BackupRunner {
     val inbox = readonlyToken?.let { inboxRunner(store, it) }
     val backupToken = readonlyToken?.let { ReadonlyFallbackToken(it, token) }
+    val base = driveOn(token)
     return BackupRunner(
-        drive = driveOn(backupToken ?: token),
+        drive = backupToken?.let(::driveOn) ?: base,
         store = store,
         koreaderRoot = koreaderRoot(),
         homeDir = ::koreaderHomeDir,
@@ -121,6 +123,7 @@ fun backupRunner(app: Context, store: BackupStore, token: () -> String?, readonl
         unmetered = { isUnmetered(app) },
         readonly = readonlyToken != null,
         readonlyLost = { backupToken?.lost },
+        appDrive = base,
     )
 }
 

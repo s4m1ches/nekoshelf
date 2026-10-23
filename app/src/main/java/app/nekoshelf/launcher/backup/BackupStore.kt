@@ -3,6 +3,9 @@ package app.nekoshelf.launcher.backup
 import android.content.Context
 import android.content.SharedPreferences
 import app.nekoshelf.launcher.backup.drive.ResumeStore
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
 
 /**
  * [BackupStatus] (one key per field) and the Drive resumable-upload sessions (keys under
@@ -34,6 +37,8 @@ class BackupStore(context: Context) : ResumeStore {
             inboxReceived = prefs.getInt(INBOX_RECEIVED, 0),
             inboxError = prefs.getString(INBOX_ERROR, null),
             inboxNeedsReauth = prefs.getBoolean(INBOX_NEEDS_REAUTH, false),
+            inboxLastReceived = prefs.getInt(INBOX_LAST_RECEIVED, 0),
+            inboxLastReceivedAt = long(INBOX_LAST_RECEIVED_AT),
         )
     }
 
@@ -61,6 +66,8 @@ class BackupStore(context: Context) : ResumeStore {
                 .putInt(INBOX_RECEIVED, s.inboxReceived)
                 .putString(INBOX_ERROR, s.inboxError)
                 .putBoolean(INBOX_NEEDS_REAUTH, s.inboxNeedsReauth)
+                .putInt(INBOX_LAST_RECEIVED, s.inboxLastReceived)
+                .putOrRemove(INBOX_LAST_RECEIVED_AT, s.inboxLastReceivedAt)
                 .commit()
         }
     }
@@ -101,6 +108,33 @@ class BackupStore(context: Context) : ResumeStore {
 
     fun saveInboxSeen(ids: Set<String>) {
         synchronized(LOCK) { prefs.edit().putStringSet(INBOX_SEEN, HashSet(ids)).commit() }
+    }
+
+    // ---- inbox "received paths": where the inbox put (or found) a book, local cache of `inbox-seen.json` `paths` ----
+
+    /**
+     * Relative paths (to the Drive file's size) of books the inbox received or found already on the
+     * reader, recorded under [account]: the backup counts a local book at such a path as on Drive
+     * (ruling I9). Kept across sign-out and the checkbox going off/on; another account's paths are
+     * not returned (paths, unlike Drive ids, may repeat between accounts).
+     */
+    fun inboxReceivedPaths(account: String?): Map<String, Long> = synchronized(LOCK) {
+        val o = try {
+            JSONObject(prefs.getString(INBOX_PATHS, null) ?: return emptyMap())
+        } catch (e: JSONException) {
+            return emptyMap()
+        }
+        if (o.optString(PATHS_ACCOUNT).ifEmpty { null } != account) return emptyMap()
+        receivedPathsOf(o)
+    }
+
+    /** Merges [paths] into the received paths of [account] (a newer size wins); another account's are replaced. */
+    fun addInboxReceivedPaths(account: String?, paths: Map<String, Long>) {
+        synchronized(LOCK) {
+            val merged = inboxReceivedPaths(account) + paths
+            val o = JSONObject().put(PATHS_ACCOUNT, account ?: "").put(PATHS, receivedPathsJson(merged))
+            prefs.edit().putString(INBOX_PATHS, o.toString()).commit()
+        }
     }
 
     // ---- ResumeStore: value "<offset>|<url>" (the offset never contains '|'; the URL may) ----
@@ -158,5 +192,27 @@ class BackupStore(context: Context) : ResumeStore {
         const val INBOX_ERROR = "inboxError"
         const val INBOX_NEEDS_REAUTH = "inboxNeedsReauth"
         const val INBOX_SEEN = "inboxSeen"
+        const val INBOX_LAST_RECEIVED = "inboxLastReceived"
+        const val INBOX_LAST_RECEIVED_AT = "inboxLastReceivedAt"
+        const val INBOX_PATHS = "inboxPaths"
+        const val PATHS_ACCOUNT = "account"
     }
 }
+
+/** `"paths"` of [o] (an `inbox-seen.json` or the local cache): `[{"path":…,"size":…}]`; missing or malformed entries are left out. */
+internal fun receivedPathsOf(o: JSONObject): Map<String, Long> {
+    val arr = o.optJSONArray(PATHS) ?: return emptyMap()
+    val out = HashMap<String, Long>()
+    for (i in 0 until arr.length()) {
+        val e = arr.optJSONObject(i) ?: continue
+        val path = e.optString("path").ifEmpty { null } ?: continue
+        out[path] = e.optLong("size", 0L)
+    }
+    return out
+}
+
+/** The `"paths"` value for [paths], sorted by path. */
+internal fun receivedPathsJson(paths: Map<String, Long>): JSONArray =
+    JSONArray(paths.entries.sortedBy { it.key }.map { (p, n) -> JSONObject().put("path", p).put("size", n) })
+
+internal const val PATHS = "paths"

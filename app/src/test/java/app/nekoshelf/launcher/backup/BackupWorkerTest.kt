@@ -10,7 +10,6 @@ import app.nekoshelf.launcher.backup.drive.TokenUnavailableException
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -181,34 +180,35 @@ class BackupWorkerTest {
     private fun snapshotUp() = drive.uploads.any { it.startsWith("koreader-") }
 
     @Test
-    fun nullReadonlyTokenWithTheCheckboxOnUploadsNoBooks() {
+    fun nullReadonlyTokenWithTheCheckboxOnStillUploadsTheBooks() {
         store.update { it.copy(inboxEnabled = true) }
         BackupWorker.tokenSource = { { "file" } }
         BackupWorker.readonlyTokenSource = { { null } }
         realRunner()
 
-        runWorker(manual = true) // a manual run may always upload books: only the hold keeps them back
+        runWorker(manual = true)
 
+        // Ruling I9: no hold; only what the inbox received counts as on Drive (nothing here).
         assertTrue(snapshotUp())
-        assertFalse("a.epub" in drive.uploads)
+        assertTrue("a.epub" in drive.uploads)
         val s = store.load()
-        assertEquals(1, s.booksPending)
+        assertEquals(0, s.booksPending)
         assertEquals(INBOX_ERROR_NO_ACCESS, s.inboxError)
         assertNotNull(s.lastSuccessAt)
         assertNull(s.lastError)
     }
 
     @Test
-    fun readonlyTokenUnavailableWithTheCheckboxOnUploadsNoBooks() {
+    fun readonlyTokenUnavailableWithTheCheckboxOnStillUploadsTheBooks() {
         store.update { it.copy(inboxEnabled = true) }
         BackupWorker.tokenSource = { { "file" } }
         BackupWorker.readonlyTokenSource = { { throw TokenUnavailableException("Google Play services timed out", null) } }
         realRunner()
 
-        runWorker(manual = true) // a manual run may always upload books: only the hold keeps them back
+        runWorker(manual = true)
 
         assertTrue(snapshotUp())
-        assertFalse("a.epub" in drive.uploads)
+        assertTrue("a.epub" in drive.uploads)
         assertEquals(BACKUP_ERROR_NO_NETWORK, store.load().inboxError)
         assertNull(store.load().lastError)
     }
@@ -219,7 +219,7 @@ class BackupWorkerTest {
         BackupWorker.readonlyTokenSource = { { throw AssertionError("not asked") } }
         realRunner()
 
-        runWorker(manual = true) // a manual run may always upload books: only the hold keeps them back
+        runWorker(manual = true)
 
         assertTrue(snapshotUp())
         assertTrue("a.epub" in drive.uploads)

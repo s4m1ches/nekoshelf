@@ -142,6 +142,8 @@ class BackupController(
     private var restoreGen = 0
     /** While the restore dialog holds backups: the flag's value before «Восстановить…» (R28). */
     private var holdPrevious: Boolean? = null
+    /** The plan behind the open restore dialog found inbox history ([BackupRunner.hasInboxHistory]). */
+    private var restoreInboxHistory = false
     /** Serializes the offer/hold flag writes (FIFO), see [writeFlag]. */
     private val flagLock = Mutex()
 
@@ -407,6 +409,8 @@ class BackupController(
                     dir.mkdirs()
                     val runner = runner()
                     val plan = if (runner.latestSnapshot(zip)) planRestore(zip, deps.koreaderRoot(), deps.homeDir()) else EMPTY_PLAN
+                    // Only books may need the hint; a failed look just leaves it out.
+                    restoreInboxHistory = plan.books > 0 && runCatching { runner.hasInboxHistory() }.getOrDefault(false)
                     Result.success(plan to (runner.latestMangaBackupFile() != null))
                 } catch (e: CancellationException) {
                     throw e
@@ -461,13 +465,16 @@ class BackupController(
      *
      * With the inbox on (and needing no re-enable) the runner gets the readonly token, so a book the
      * inbox brought (on Drive only as the owner's own file) comes back too. Without it such books
-     * fail with [BookNeedsInboxException], and the partial text says to turn the inbox on.
+     * fail with [BookNeedsInboxException] when the plan found inbox history (the checkbox on, a
+     * seen set, or an app-made `inbox-seen.json` on Drive), and the partial text says to turn the
+     * inbox on; with no history they are plainly not on Drive and the text says only how many failed.
      */
     override fun confirmRestore() {
         val plan = state.restore?.plan ?: return
         val zip = restoreZip ?: return
         if (state.backupUi.busy) return
         val previous = holdPrevious ?: false
+        val history = restoreInboxHistory
         holdPrevious = null
         restoreGen++
         restoreZip = null
@@ -480,7 +487,7 @@ class BackupController(
                 val grant = status.inboxEnabled && !status.inboxNeedsReauth
                 try {
                     val runner = runner(readonly = if (grant) deps.readonly::token else null)
-                    applyRestore(zip, plan) { book, to -> runner.downloadBook(book, to) }
+                    applyRestore(zip, plan) { book, to -> runner.downloadBook(book, to, inboxHistory = history) }
                     text(R.string.restore_done) to false
                 } catch (e: RestoreFailedException) {
                     Log.w(TAG, "restore partly failed", e)

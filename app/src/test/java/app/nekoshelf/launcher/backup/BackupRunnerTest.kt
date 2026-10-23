@@ -57,6 +57,8 @@ class FakeDrive : Drive {
         val props: Map<String, String>,
         val mimeType: String = if (folder) FOLDER_MIME else "",
         val modifiedTime: Long = 0L,
+        /** Made by the app ([folder], [upload]): what the base `drive.file` token sees ([fileScope]). */
+        val appMade: Boolean = false,
     )
 
     val nodes = LinkedHashMap<String, Node>()
@@ -103,6 +105,12 @@ class FakeDrive : Drive {
     /** Called at the start of every upload with the file's name (e.g. to hold a thread there). */
     var onUpload: ((String) -> Unit)? = null
 
+    /**
+     * While set, creating a folder or uploading into a folder the app did not make fails with 403:
+     * a `drive.file` app may not be allowed to write into the owner's own folders.
+     */
+    var ownerFoldersReadOnly = false
+
     /** A file someone (the owner via Drive's UI, or the app) put under [parent]; returns its id. */
     fun put(
         parent: String,
@@ -111,16 +119,17 @@ class FakeDrive : Drive {
         props: Map<String, String> = emptyMap(),
         mimeType: String = "application/octet-stream",
         modifiedTime: Long = 0L,
+        appMade: Boolean = false,
     ): String {
         val id = "u${nextId++}"
-        nodes[id] = Node(id, parent, name, false, bytes, props, mimeType, modifiedTime)
+        nodes[id] = Node(id, parent, name, false, bytes, props, mimeType, modifiedTime, appMade)
         return id
     }
 
     /** A folder someone made under [parent] (null = My Drive), even beside a same-named one; returns its id. */
-    fun putFolder(parent: String?, name: String): String {
+    fun putFolder(parent: String?, name: String, appMade: Boolean = false): String {
         val id = "d${nextId++}"
-        nodes[id] = Node(id, parent, name, true, ByteArray(0), emptyMap())
+        nodes[id] = Node(id, parent, name, true, ByteArray(0), emptyMap(), appMade = appMade)
         return id
     }
 
@@ -132,12 +141,21 @@ class FakeDrive : Drive {
         failEverything?.let { throw it }
     }
 
-    override fun folder(name: String, parent: String?): String {
+    override fun folder(name: String, parent: String?): String = folderIn(name, parent) { true }
+
+    private fun folderIn(name: String, parent: String?, visible: (Node) -> Boolean): String {
         call()
-        nodes.values.firstOrNull { it.folder && it.parent == parent && it.name == name }?.let { return it.id }
+        nodes.values.firstOrNull { it.folder && it.parent == parent && it.name == name && visible(it) }?.let { return it.id }
+        checkWritable(parent)
         val id = "f${nextId++}"
-        nodes[id] = Node(id, parent, name, true, ByteArray(0), emptyMap())
+        nodes[id] = Node(id, parent, name, true, ByteArray(0), emptyMap(), appMade = true)
         return id
+    }
+
+    private fun checkWritable(parent: String?) {
+        if (ownerFoldersReadOnly && parent != null && nodes[parent]?.appMade == false) {
+            throw DriveException(403, "The user does not have sufficient permissions for this file.")
+        }
     }
 
     override fun list(parent: String): List<RemoteFile> {
@@ -180,6 +198,7 @@ class FakeDrive : Drive {
         }
         failUploadNamed?.let { (n, e) -> if (n == name) throw e }
         require(nodes[parent]?.folder == true) { "no parent folder $parent" }
+        checkWritable(parent)
         // Drive's appProperties limits: 124 UTF-8 bytes per key + value, 30 per app.
         if (props.size > 30) throw DriveException(400, "too many properties")
         for ((k, v) in props) {
@@ -187,7 +206,7 @@ class FakeDrive : Drive {
         }
         resumeStores += resume
         val id = "x${nextId++}"
-        nodes[id] = Node(id, parent, name, false, file.readBytes(), props)
+        nodes[id] = Node(id, parent, name, false, file.readBytes(), props, appMade = true)
         uploads += name
         return nodes[id]!!.remote()
     }
@@ -205,6 +224,25 @@ class FakeDrive : Drive {
         failDelete?.let { throw it }
         nodes.remove(id) ?: throw DriveException(404, "not found")
         deletes += id
+    }
+
+    /**
+     * This Drive as the base `drive.file` token sees it: only what the app made. A folder it looks
+     * up is one of the app's (or a new one); an upload into a folder it cannot see is a 404.
+     */
+    fun fileScope(): Drive = object : Drive {
+        private fun visible(id: String) = nodes[id]?.appMade == true
+        override fun folder(name: String, parent: String?) = folderIn(name, parent) { it.appMade }
+        override fun list(parent: String) = this@FakeDrive.list(parent).filter { visible(it.id) }
+        override fun listByProp(key: String, value: String) = this@FakeDrive.listByProp(key, value).filter { visible(it.id) }
+        override fun listTree(rootId: String) = this@FakeDrive.listTree(rootId).filter { visible(it.file.id) }
+        override fun findChildren(parent: String, name: String) = this@FakeDrive.findChildren(parent, name).filter { visible(it.id) }
+        override fun upload(parent: String, name: String, file: File, props: Map<String, String>, resume: ResumeStore?): RemoteFile {
+            if (!visible(parent)) throw DriveException(404, "File not found: $parent")
+            return this@FakeDrive.upload(parent, name, file, props, resume)
+        }
+        override fun download(id: String, to: File) = this@FakeDrive.download(id, to)
+        override fun delete(id: String) = this@FakeDrive.delete(id)
     }
 
     private fun Node.remote() = RemoteFile(id, name, bytes.size.toLong(), props, mimeType, modifiedTime, listOfNotNull(parent))
@@ -270,7 +308,8 @@ class BackupRunnerTest {
         unmetered: Boolean = true,
         readonly: Boolean = inbox != null,
         readonlyLost: () -> Exception? = { null },
-    ) = BackupRunner(drive, store, ko, { home }, { manga() }, { mangaAvailable() }, cache, { now }, zone, inbox, { unmetered }, readonly, readonlyLost)
+        appDrive: Drive = drive,
+    ) = BackupRunner(drive, store, ko, { home }, { manga() }, { mangaAvailable() }, cache, { now }, zone, inbox, { unmetered }, readonly, readonlyLost, appDrive)
 
     private fun run(power: Power = charging, manual: Boolean = false, powerNow: () -> Power = { power }) =
         runner().run(power, manual, powerNow)
@@ -935,11 +974,22 @@ class BackupRunnerTest {
             failedAutoDay = "2026-10-23", failedAutoAttempts = 2, restoreOfferPending = true, koreaderSnapshots = 3, mangaSnapshots = 4,
             booksOnDrive = 5, booksLocal = 6, booksPending = 7, booksCaughtUpOnce = true, signedInAt = 8,
             inboxEnabled = true, inboxLastCheckAt = 9, inboxReceived = 10, inboxError = "мало места",
+            inboxNeedsReauth = true, inboxLastReceived = 11, inboxLastReceivedAt = 12,
         )
         store.save(s)
         assertEquals(s, BackupStore(ApplicationProvider.getApplicationContext()).load())
         store.save(BackupStatus.EMPTY)
         assertEquals(BackupStatus.EMPTY, store.load())
+    }
+
+    @Test fun receivedPathsAreKeptPerAccountAcrossSignOut() {
+        store.addInboxReceivedPaths("owner@example.com", mapOf("a.epub" to 1L, "Серия/b.epub" to 2L))
+        store.addInboxReceivedPaths("owner@example.com", mapOf("a.epub" to 3L))
+        store.signedOut()
+        val fresh = BackupStore(ApplicationProvider.getApplicationContext())
+        assertEquals(mapOf("a.epub" to 3L, "Серия/b.epub" to 2L), fresh.inboxReceivedPaths("owner@example.com"))
+        assertEquals(emptyMap<String, Long>(), fresh.inboxReceivedPaths("other@example.com"))
+        assertEquals(emptyMap<String, Long>(), fresh.inboxReceivedPaths(null))
     }
 
     @Test fun resumeSessionsRoundTripUrlsWithSeparators() {
@@ -1089,58 +1139,122 @@ class BackupRunnerTest {
         assertEquals("aaaa-longer", to.readText())
     }
 
-    @Test fun checkboxOnWithoutReadonlyViewHoldsTheBooks() {
+    /** The inbox (checkbox on, granted) brings `Серия/Том 1.epub` («том», 6 bytes) on the day after the first backup. */
+    private fun receiveOneBook() {
+        run()
+        userFile(drive.putFolder(booksFolder(), "Серия"), "Том 1.epub", "том")
+        now = at(day0.plusDays(1))
         store.update { it.copy(inboxEnabled = true) }
+        grantedRun()
+        assertEquals("том", File(home, "Серия/Том 1.epub").readText())
+        assertEquals(mapOf("Серия/Том 1.epub" to 6L), store.inboxReceivedPaths("owner@example.com"))
+        book("fresh.epub", "f")
+        drive.uploads.clear()
+        now += 60_000
+    }
 
-        val s = runner().run(charging, false) // no readonly view this run
-
-        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk"), drive.uploads)
-        assertEquals(0, drive.treeCalls)
-        assertEquals(3, s.booksLocal)
-        assertEquals(3, s.booksPending)
-        assertEquals(0, s.booksOnDrive)
-        assertFalse(s.booksCaughtUpOnce)
-        assertEquals(1, s.koreaderSnapshots)
+    private fun assertOnlyFreshUploaded(s: BackupStatus) {
+        assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk", "fresh.epub"), drive.uploads)
+        assertEquals(1, drive.nodes.values.count { it.name == "Том 1.epub" })
+        assertEquals(5, s.booksLocal)
+        assertEquals(5, s.booksOnDrive)
+        assertEquals(0, s.booksPending)
         assertEquals(now, s.lastSuccessAt)
         assertNull(s.lastError)
     }
 
-    @Test fun caughtUpFlagIsLeftAloneWhileBooksAreHeld() {
-        run()
-        book("new.epub", "n")
-        store.update { it.copy(inboxEnabled = true) }
+    @Test fun checkboxOffAfterReceivingUploadsNoDuplicate() {
+        receiveOneBook()
+        store.inboxEnabled(false)
+
+        val s = run() // drive.file only: the owner's file is invisible, the received path is not
+
+        assertOnlyFreshUploaded(s)
+    }
+
+    @Test fun freshCacheAfterSignOutTakesTheReceivedPathsFromDrive() {
+        receiveOneBook()
+        // Signed out and in again with every local record gone (a wiped reader); the checkbox is off.
+        store.signedOut()
+        ApplicationProvider.getApplicationContext<android.content.Context>()
+            .getSharedPreferences("backup", android.content.Context.MODE_PRIVATE).edit().clear().commit()
+        store.signedIn("owner@example.com", now)
+
+        val s = run()
+
+        assertOnlyFreshUploaded(s)
+        // The local cache is refilled from inbox-seen.json.
+        assertEquals(mapOf("Серия/Том 1.epub" to 6L), store.inboxReceivedPaths("owner@example.com"))
+    }
+
+    @Test fun anotherAccountsReceivedPathsDoNotCount() {
+        receiveOneBook()
+        store.signedOut()
+        store.signedIn("other@example.com", now)
+        drive.nodes.clear() // another account's Drive: nothing there
         drive.uploads.clear()
-        now = at(day0.plusDays(1))
 
-        val s = runner().run(charging, false)
+        run()
 
-        assertTrue("new.epub" !in drive.uploads)
-        assertEquals(1, s.booksPending)
+        assertTrue("Том 1.epub" in drive.uploads)
+    }
+
+    @Test fun checkboxOnWithoutTheReadonlyViewStillBacksUpTheOtherBooks() {
+        receiveOneBook()
+
+        val s = runner().run(charging, false) // no readonly token this run: no inbox step, no readonly view
+
+        assertOnlyFreshUploaded(s)
         assertTrue(s.booksCaughtUpOnce)
     }
 
-    @Test fun readonlyLostByTheListingHoldsTheBooksAndIsTheInboxError() {
+    @Test fun oldSeenFileWithoutPathsIsReadAsNoPaths() {
+        run()
+        val root = drive.folder("Nekoshelf", null)
+        drive.upload(root, INBOX_SEEN_FILE, File(tmp.root, "old.json").apply { writeText("""{"ids":["u1"],"updated":1}""") }, mapOf("kind" to "inbox-seen"), null)
+        book("fresh.epub", "f")
+        drive.uploads.clear()
+
+        val s = run()
+
+        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk", "fresh.epub"), drive.uploads)
+        assertEquals(now, s.lastSuccessAt)
+    }
+
+    @Test fun readonlyLostMidRunStillBacksUpTheBooksAndIsTheInboxError() {
         store.update { it.copy(inboxEnabled = true) }
 
         val s = runner(readonly = true, readonlyLost = { DriveAuthException("no drive.readonly token mid-run") }).run(charging, false)
 
-        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk"), drive.uploads)
-        assertEquals(3, s.booksPending)
-        assertFalse(s.booksCaughtUpOnce)
+        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk", "a.epub", "b.pdf", "c.fb2"), drive.uploads)
+        assertEquals(0, s.booksPending)
+        assertTrue(s.booksCaughtUpOnce)
         assertEquals(INBOX_ERROR_NO_ACCESS, s.inboxError)
         assertEquals(now, s.lastSuccessAt)
         assertNull(s.lastError)
+    }
 
-        // Play services failing for the readonly token mid-run: the same path, not a failed backup.
-        drive.uploads.clear()
-        now += 60_000
-        val t = runner(readonly = true, readonlyLost = { TokenUnavailableException("Google Play services timed out", null) })
-            .run(charging, false)
-        assertEquals(listOf("koreader-2026-10-23.zip", "manga-2026-10-23.tachibk"), drive.uploads)
-        assertEquals(3, t.booksPending)
-        assertEquals("нет сети", t.inboxError)
-        assertEquals(now, t.lastSuccessAt)
-        assertNull(t.lastError)
+    @Test fun booksGoIntoTheAppsOwnFoldersNeverTheOwners() {
+        val root = drive.folder("Nekoshelf", null)
+        val books = drive.folder("books", root)
+        val owners = drive.putFolder(books, "Тест серии") // the owner made it in Drive's UI
+        userFile(owners, "Том 1.epub", "том")
+        book("Тест серии/Том 1.epub", "том")
+        book("Тест серии/Том 2.epub", "t2")
+        drive.ownerFoldersReadOnly = true
+
+        val s = runner(readonly = true, appDrive = drive.fileScope()).run(charging, false)
+
+        assertEquals(now, s.lastSuccessAt)
+        assertNull(s.lastError)
+        val up = drive.nodes.values.single { it.name == "Том 2.epub" }
+        val folder = drive.nodes[up.parent]!!
+        assertEquals("Тест серии", folder.name)
+        assertTrue(folder.appMade)
+        assertEquals(books, folder.parent)
+        assertTrue(drive.nodes.values.none { it.parent == owners && it.name != "Том 1.epub" })
+        assertEquals(1, drive.nodes.values.count { it.name == "Том 1.epub" }) // present as the owner's: not uploaded
+        assertEquals(0, s.booksPending)
     }
 
     @Test fun restoreLooksUpTheBooksFolderOncePerRunner() {
@@ -1247,11 +1361,43 @@ class BackupRunnerTest {
         run()
         userFile(booksFolder(), "inbox.epub", "i")
 
-        val e = assertThrows(IOException::class.java) { runner().downloadBook(BookEntry("inbox.epub", 1, 1), File(tmp.root, "i")) }
+        val e = assertThrows(IOException::class.java) {
+            runner().downloadBook(BookEntry("inbox.epub", 1, 1), File(tmp.root, "i"), inboxHistory = true)
+        }
 
         assertEquals("включите \"Забирать новые книги\" и повторите", e.message)
         assertEquals("включите \"Забирать новые книги\" и повторите", backupErrorText(e))
         assertEquals(0, drive.treeCalls)
+    }
+
+    @Test fun withoutInboxHistoryAMissingBookIsPlainNotFound() {
+        run()
+
+        val e = assertThrows(FileNotFoundException::class.java) { runner().downloadBook(BookEntry("gone.epub", 1, 1), File(tmp.root, "g")) }
+
+        assertFalse(e is BookNeedsInboxException)
+        assertNotEquals(RESTORE_HINT_INBOX, backupErrorText(e))
+    }
+
+    @Test fun inboxHistoryIsTheCheckboxTheSeenSetOrASeenFileOnDrive() {
+        run()
+        assertFalse(runner().hasInboxHistory())
+
+        store.inboxEnabled(true)
+        assertTrue(runner().hasInboxHistory())
+        store.inboxEnabled(false)
+
+        store.saveInboxSeen(setOf("x"))
+        assertTrue(runner().hasInboxHistory())
+        store.saveInboxSeen(emptySet())
+        assertFalse(runner().hasInboxHistory())
+
+        // A wiped reader: only the app-made seen file on Drive tells.
+        val root = drive.folder("Nekoshelf", null)
+        drive.put(root, INBOX_SEEN_FILE, "{}".toByteArray()) // the owner's own file of that name is no proof
+        assertFalse(runner().hasInboxHistory())
+        drive.upload(root, INBOX_SEEN_FILE, File(tmp.root, "s.json").apply { writeText("""{"ids":[]}""") }, mapOf("kind" to "inbox-seen"), null)
+        assertTrue(runner().hasInboxHistory())
     }
 
     @Test fun checkboxOffBackupUnchanged() {

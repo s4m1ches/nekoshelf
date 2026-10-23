@@ -22,6 +22,7 @@ const val INBOX_ERROR_LOW_SPACE = "мало места"
 private const val INBOX_ERROR_OTHER = "не удалось получить книгу с Диска"
 const val INBOX_ERROR_NO_ROOT = "на Диске нет папки Nekoshelf"
 const val INBOX_ERROR_MANY_BOOKS = "в папке Nekoshelf несколько папок books"
+const val INBOX_ERROR_BAD_NAME = "у книги на Диске слишком длинное или недопустимое имя"
 
 /** A download is skipped (and retried later) when it would leave less free space than this. */
 internal const val INBOX_MIN_FREE_BYTES = 200L * 1024 * 1024
@@ -63,13 +64,22 @@ fun inboxCandidates(tree: List<TreeFile>, seen: Set<String>): List<TreeFile> =
  *   Drive or I/O failure stops the run before anything is downloaded (a wiped reader would
  *   otherwise pull every book back), except a copy gone since the listing (404), which is skipped.
  *   It is written back (new file; the copies read or found corrupt are then deleted) when it changed.
+ * - The received paths (ruling I9) go the same way ([BackupStore.inboxReceivedPaths], the file's
+ *   `paths`): every book the inbox put on the reader or found already there, so the backup never
+ *   uploads it again whatever the readonly view. A seen file whose book is on the reader but whose
+ *   path is not recorded yet (received before paths were kept) is added.
  * - Stale download temp files (`.inbox-*.part*`, older than a day) are removed from the folders
  *   this run writes to.
  * - A download goes to a temp file beside the target and is moved into place without ever
- *   replacing a file; an existing path is skipped and marked seen. The file gets Drive's
- *   `modifiedTime` as its mtime. A failed download is not marked seen (retried next run); network
- *   and sign-in failures stop the run, others only that file.
- * - A file is skipped (not seen) when free space after it would drop below [INBOX_MIN_FREE_BYTES].
+ *   replacing a file; an existing path is skipped and marked seen. A download shorter or longer than
+ *   Drive's size is a failure. The file gets Drive's `modifiedTime` as its mtime. A failed download
+ *   is not marked seen (retried next run); network and sign-in failures stop the run, others only
+ *   that file.
+ * - A name the reader cannot take (a part over [MAX_NAME_BYTES] UTF-8 bytes, an unsafe path, or a
+ *   name the file system refuses — tried before downloading) is skipped, marked seen and reported
+ *   by that run only ([INBOX_ERROR_BAD_NAME]).
+ * - A file is skipped (not seen) when free space after it would drop below [INBOX_MIN_FREE_BYTES],
+ *   measured on the nearest existing folder of [homeDir].
  *
  * Records the outcome in [store] (merged; the backup's own fields are untouched). Blocking: call
  * off the main thread.
@@ -94,7 +104,7 @@ class InboxRunner(
     private fun runLocked(): InboxResult {
         val start = store.load()
         val now = clock()
-        val pass = Pass(hadBackup = start.lastSuccessAt != null)
+        val pass = Pass(hadBackup = start.lastSuccessAt != null, account = start.account)
         var authLost = false
         var reachedDrive = true // false when a network or token failure says nothing about access
         val fatal = try {
@@ -109,23 +119,26 @@ class InboxRunner(
         store.update { cur ->
             // Signed out or another account since the start: this check means nothing for it.
             if (!cur.signedIn || cur.account != start.account) return@update cur
-            cur.copy(
+            var s = cur.copy(
                 inboxLastCheckAt = now,
                 inboxReceived = pass.received,
                 inboxError = error,
                 // A run that reached Drive without a sign-in failure proves access is back.
                 inboxNeedsReauth = if (authLost) true else if (reachedDrive) false else cur.inboxNeedsReauth,
             )
+            if (pass.received > 0) s = s.copy(inboxLastReceived = pass.received, inboxLastReceivedAt = now)
+            s
         }
         return InboxResult(pass.received, pass.skipped, error)
     }
 
-    private inner class Pass(private val hadBackup: Boolean) {
+    private inner class Pass(private val hadBackup: Boolean, private val account: String?) {
         var received = 0
         var skipped = 0
         var lowSpace = false
         var firstError: String? = null
         private val seen = HashSet<String>()
+        private val paths = HashMap<String, Long>()
 
         fun check() {
             val root = backupRoot() ?: return
@@ -134,11 +147,12 @@ class InboxRunner(
             val booksId = books.singleOrNull()?.id ?: return
 
             val onDrive = HashSet<String>()
+            val onDrivePaths = HashMap<String, Long>()
             val replaceable = ArrayList<RemoteFile>() // read fine or corrupt: superseded by the next write
             var corrupt = false
-            for (f in seenCopies(root.id)) {
-                when (val r = readSeen(f)) {
-                    is SeenCopy.Ids -> { onDrive += r.ids; replaceable += f }
+            for (f in DriveRoots.seenCopies(drive, root.id)) {
+                when (val r = readSeenCopy(drive, f)) {
+                    is SeenCopy.Read -> { onDrive += r.ids; onDrivePaths += r.paths; replaceable += f }
                     SeenCopy.Corrupt -> { corrupt = true; replaceable += f }
                     SeenCopy.Gone -> Unit // deleted since the listing: not ours to delete again
                 }
@@ -147,20 +161,33 @@ class InboxRunner(
             seen += local
             seen += onDrive
             if (seen != local) store.saveInboxSeen(seen)
+            val localPaths = store.inboxReceivedPaths(account)
+            paths += onDrivePaths
+            paths += localPaths
+            if (paths != localPaths) store.addInboxReceivedPaths(account, paths)
 
             val home = homeDir()
-            val candidates = inboxCandidates(drive.listTree(booksId), seen)
+            val tree = drive.listTree(booksId)
+            fillInReceivedPaths(tree, home)
+            val candidates = inboxCandidates(tree, seen)
             sweepStaleParts(candidates.mapNotNull { resolveInside(home, it.relativePath)?.parentFile }.toSet())
-            for (c in candidates) receive(c, home)
+            val space = generateSequence(home) { it.parentFile }.firstOrNull { it.exists() } ?: home
+            for (c in candidates) receive(c, home, space)
 
-            if (seen != onDrive || corrupt || replaceable.size > 1) writeSeen(root.id, replaceable)
+            if (seen != onDrive || paths != onDrivePaths || corrupt || replaceable.size > 1) writeSeen(root.id, replaceable)
         }
 
         /** The backup's `Nekoshelf` folder ([DriveRoots.resolve]); none is an error once a backup has succeeded. */
         private fun backupRoot(): RemoteFile? =
             DriveRoots.resolve(drive) ?: if (hadBackup) throw InboxFailure(INBOX_ERROR_NO_ROOT) else null
 
-        private fun seenCopies(rootId: String): List<RemoteFile> = DriveRoots.seenCopies(drive, rootId)
+        /** Seen files (received before paths were kept) whose book is on the reader at its path. */
+        private fun fillInReceivedPaths(tree: List<TreeFile>, home: File) {
+            for (t in inboxCandidates(tree, emptySet())) {
+                if (t.file.id !in seen || t.relativePath in paths) continue
+                if (resolveInside(home, t.relativePath)?.isFile == true) recordPath(t)
+            }
+        }
 
         /** Leftovers of runs killed mid-download; today's are left alone. */
         private fun sweepStaleParts(dirs: Set<File>) {
@@ -172,18 +199,17 @@ class InboxRunner(
             }
         }
 
-        private fun receive(c: TreeFile, home: File) {
+        private fun receive(c: TreeFile, home: File, space: File) {
             val target = resolveInside(home, c.relativePath)
-            if (target == null) {
-                markSeen(c.file.id) // an unsafe path never becomes safe
+            if (target == null || c.relativePath.split('/').any { it.toByteArray(Charsets.UTF_8).size > MAX_NAME_BYTES }) {
+                badName(c) // never becomes acceptable
                 return
             }
             if (target.exists()) {
-                skipped++
-                markSeen(c.file.id)
+                existing(c, target)
                 return
             }
-            if (freeBytes(home) - c.file.size < INBOX_MIN_FREE_BYTES) {
+            if (freeBytes(space) - c.file.size < INBOX_MIN_FREE_BYTES) {
                 lowSpace = true
                 return
             }
@@ -195,18 +221,33 @@ class InboxRunner(
             try {
                 dir.mkdirs()
                 part = File.createTempFile(PART_PREFIX, PART_SUFFIX, dir)
+                // The folder takes files: one the file system refuses is the name's fault.
+                val probed = try {
+                    target.createNewFile()
+                } catch (e: IOException) {
+                    badName(c)
+                    return
+                }
+                if (!probed) { // appeared meanwhile
+                    existing(c, target)
+                    return
+                }
+                target.delete()
                 drive.download(c.file.id, part)
+                if (c.file.size > 0 && part.length() != c.file.size) {
+                    throw IOException("download is ${part.length()} of ${c.file.size} bytes")
+                }
                 if (c.file.modifiedTime > 0) part.setLastModified(c.file.modifiedTime)
                 try {
                     Files.move(part.toPath(), target.toPath()) // no REPLACE_EXISTING: never overwrites
                 } catch (e: FileAlreadyExistsException) {
-                    skipped++
-                    markSeen(c.file.id)
+                    existing(c, target)
                     return
                 }
                 if (c.file.modifiedTime > 0) target.setLastModified(c.file.modifiedTime)
                 received++
                 done = true
+                recordPath(c)
                 markSeen(c.file.id)
             } catch (e: Exception) {
                 if (isNetworkClass(e) || e is DriveAuthException) throw e
@@ -217,45 +258,38 @@ class InboxRunner(
             }
         }
 
+        /** Something is already at [target]: left alone, and the backup must not upload it again. */
+        private fun existing(c: TreeFile, target: File) {
+            skipped++
+            if (target.isFile) recordPath(c)
+            markSeen(c.file.id)
+        }
+
+        private fun badName(c: TreeFile) {
+            if (firstError == null) firstError = INBOX_ERROR_BAD_NAME
+            markSeen(c.file.id)
+        }
+
         /** Persisted at once: a run killed later must not download this file again. */
         private fun markSeen(id: String) {
             if (seen.add(id)) store.saveInboxSeen(seen)
         }
 
-        /**
-         * Any failure other than corrupt content or a 404 propagates: the run must stop. Content
-         * that does not parse counts as corrupt only when all of the file arrived (a cut-off
-         * transfer is a failure, not a reason to overwrite the record).
-         */
-        private fun readSeen(f: RemoteFile): SeenCopy {
-            val tmp = File.createTempFile("inbox-seen", ".json")
-            try {
-                try {
-                    drive.download(f.id, tmp)
-                } catch (e: DriveException) {
-                    if (e.code == 404) return SeenCopy.Gone
-                    throw e
-                }
-                val ids = try {
-                    JSONObject(tmp.readText()).optJSONArray("ids")
-                } catch (e: JSONException) {
-                    null
-                }
-                if (ids == null) {
-                    if (tmp.length() != f.size) throw IOException("seen file cut off: ${tmp.length()} of ${f.size} bytes")
-                    return SeenCopy.Corrupt
-                }
-                return SeenCopy.Ids((0 until ids.length()).mapNotNull { ids.optString(it).ifEmpty { null } }.toSet())
-            } finally {
-                tmp.delete()
-            }
+        /** Persisted at once too: a backup right after must not upload this book. */
+        private fun recordPath(t: TreeFile) {
+            if (paths[t.relativePath] == t.file.size) return
+            paths[t.relativePath] = t.file.size
+            store.addInboxReceivedPaths(account, mapOf(t.relativePath to t.file.size))
         }
 
         /** Uploads the merged set as a new file, then removes the copies it replaces. */
         private fun writeSeen(rootId: String, old: List<RemoteFile>) {
             val tmp = File.createTempFile("inbox-seen", ".json")
             try {
-                val json = JSONObject().put("ids", JSONArray(seen.sorted())).put("updated", clock())
+                val json = JSONObject()
+                    .put("ids", JSONArray(seen.sorted()))
+                    .put(PATHS, receivedPathsJson(paths))
+                    .put("updated", clock())
                 tmp.writeText(json.toString())
                 drive.upload(rootId, INBOX_SEEN_FILE, tmp, mapOf(PROP_KIND to KIND_INBOX_SEEN), null)
             } finally {
@@ -266,15 +300,50 @@ class InboxRunner(
         }
     }
 
-    private sealed interface SeenCopy {
-        data class Ids(val ids: Set<String>) : SeenCopy
-        data object Corrupt : SeenCopy
-        data object Gone : SeenCopy
-    }
-
     private companion object {
         /** Process-wide: the wake work, a backup run and the button must not download the same file twice. */
         val RUNNING = AtomicBoolean(false)
+    }
+}
+
+/** Longest file or folder name the reader's file systems take, in UTF-8 bytes (ext4, FAT long names). */
+private const val MAX_NAME_BYTES = 255
+
+/** One app-made `inbox-seen.json` as read by [readSeenCopy]. */
+internal sealed interface SeenCopy {
+    /** Its ids and received paths (none in a file written before paths were kept). */
+    data class Read(val ids: Set<String>, val paths: Map<String, Long>) : SeenCopy
+    data object Corrupt : SeenCopy
+    data object Gone : SeenCopy
+}
+
+/**
+ * Downloads and parses the seen file [f]. Any failure other than corrupt content or a 404 propagates.
+ * Content that does not parse counts as corrupt only when all of the file arrived (a cut-off
+ * transfer is a failure, not a reason to overwrite the record).
+ */
+internal fun readSeenCopy(drive: Drive, f: RemoteFile): SeenCopy {
+    val tmp = File.createTempFile("inbox-seen", ".json")
+    try {
+        try {
+            drive.download(f.id, tmp)
+        } catch (e: DriveException) {
+            if (e.code == 404) return SeenCopy.Gone
+            throw e
+        }
+        val o = try {
+            JSONObject(tmp.readText())
+        } catch (e: JSONException) {
+            null
+        }
+        val ids = o?.optJSONArray("ids")
+        if (ids == null) {
+            if (tmp.length() != f.size) throw IOException("seen file cut off: ${tmp.length()} of ${f.size} bytes")
+            return SeenCopy.Corrupt
+        }
+        return SeenCopy.Read((0 until ids.length()).mapNotNull { ids.optString(it).ifEmpty { null } }.toSet(), receivedPathsOf(o))
+    } finally {
+        tmp.delete()
     }
 }
 
