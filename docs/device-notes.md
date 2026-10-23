@@ -99,3 +99,7 @@ the owner's device on 2026-10-23.
 
 - `adb shell screencap` output is after the firmware's contrast boost: light greys come
   out darker than specified (#DDDDDD shows as about #AEAEAE), so UI greys are kept light.
+
+## Бэкап на Google Drive
+
+- Раз в сутки при пробуждении, если заряд больше 70 % или ридер на зарядке; Wi-Fi сам никогда не включается. Сохраняются в папку «Meebook» на Drive: `koreader` и `manga` (настройки и данные, 14 дневных снимков), `books/...` (сами книги, никогда не удаляются). Восстановление только докладывает то, чего не хватает, и ничего не перезаписывает.
