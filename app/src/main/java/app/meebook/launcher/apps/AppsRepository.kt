@@ -26,8 +26,9 @@ class AppsRepository(context: Context, private val prefs: SharedPreferences) {
     fun dockSlots(): List<AppEntry?> {
         val defaults = defaultDock()
         return (0 until DOCK_SIZE).map { i ->
-            val e = prefs.getString(key(i), null)?.let { entry(it) } ?: defaults.getOrNull(i)?.let { entry(it) }
-            e?.let { it.copy(label = SHORT_LABELS[it.pkg] ?: it.label) }
+            val default = defaults.getOrNull(i)
+            val e = prefs.getString(key(i), null)?.let { entry(it) } ?: default?.let { entry(it) }
+            e?.let { it.copy(label = dockLabel(i, it.pkg, it.label, isDefault = it.pkg == default)) }
         }
     }
 
@@ -51,6 +52,7 @@ class AppsRepository(context: Context, private val prefs: SharedPreferences) {
     internal fun defaultDock(): List<String> = listOf(
         KOREADER,
         MANGA,
+        // BROWSER_SLOT
         if (installed(EINKBRO)) EINKBRO else defaultBrowser() ?: EINKBRO,
         SETTINGS,
         PLAY,
@@ -90,14 +92,24 @@ class AppsRepository(context: Context, private val prefs: SharedPreferences) {
         const val EINKBRO = "info.plateaukao.einkbro"
         const val SETTINGS = "com.android.settings"
         const val PLAY = "com.android.vending"
+        /** The dock slot whose default is a browser (EinkBro, else the system's default browser). */
+        internal const val BROWSER_SLOT = 2
+        private const val BROWSER_LABEL = "Браузер"
 
         /** Short dock labels (spec: KOReader, «Манга», «Браузер», «Опции», Google Play). */
         private val SHORT_LABELS = mapOf(
             KOREADER to "KOReader",
             MANGA to "Манга",
-            EINKBRO to "Браузер",
+            EINKBRO to BROWSER_LABEL,
             SETTINGS to "Опции",
             PLAY to "Google Play",
         )
+
+        /**
+         * The dock label for [pkg] in slot [index]: the browser slot's default app reads «Браузер»
+         * whichever browser it is (ruling R14); otherwise the spec's short label, else the app's own.
+         */
+        internal fun dockLabel(index: Int, pkg: String, label: String, isDefault: Boolean): String =
+            if (index == BROWSER_SLOT && isDefault) BROWSER_LABEL else SHORT_LABELS[pkg] ?: label
     }
 }

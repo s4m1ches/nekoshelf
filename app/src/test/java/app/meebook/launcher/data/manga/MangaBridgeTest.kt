@@ -163,6 +163,13 @@ class MangaBridgeTest {
         assertEquals(3, s!!.use { it.readBytes().size })
     }
 
+    @Test fun installedIgnoresThePermission() {
+        assertFalse(bridge.installed())
+        shadowOf(context.packageManager).installPackage(PackageInfo().apply { packageName = "app.komikku.meebook" })
+        assertTrue(bridge.installed())
+        assertFalse(bridge.available())
+    }
+
     @Test fun availableNeedsPackageAndPermission() {
         assertFalse(bridge.available())
         shadowOf(context.packageManager).installPackage(PackageInfo().apply { packageName = "app.komikku.meebook" })

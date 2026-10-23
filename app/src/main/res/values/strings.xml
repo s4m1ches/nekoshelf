@@ -19,6 +19,7 @@
     <string name="now_reading">Сейчас читаю</string>
     <string name="empty_koreader">KOReader ещё не открывал книги</string>
     <string name="empty_manga">Манга не установлена</string>
+    <string name="manga_no_access">Нет доступа к «Манге»</string>
     <string name="empty_manga_history">В «Манге» ещё ничего не читали</string>
     <string name="book_progress">KOReader · %1$d%%</string>
     <string name="book_done">KOReader · прочитано</string>
@@ -44,11 +45,17 @@
     <string name="apps_empty">Приложений нет</string>
     <string name="close">Закрыть</string>
 
+    <!-- About (long-press on the clock) -->
+    <string name="about_title">О приложении</string>
+    <string name="about_app">Лаунчер, версия %1$s</string>
+    <string name="about_purpose">Домашний экран для Meebook E6. Для личного пользования.</string>
+    <string name="about_font_title">Шрифт</string>
+    <string name="about_font">Literata — SIL Open Font License 1.1 (полный текст лицензии лежит в приложении: assets/licenses/literata-OFL.txt).</string>
+
     <!-- Year stats -->
     <string name="stats_title">Статистика чтения</string>
     <string name="stats_year_totals">%1$s стр. · %2$s</string>
     <string name="stats_manga_backfilled">часть данных — без страниц</string>
-    <string name="stats_manga_none">Манга не установлена</string>
     <string name="stats_less">меньше</string>
     <string name="stats_more">больше</string>
     <string name="stats_prev_year">Предыдущий год</string>

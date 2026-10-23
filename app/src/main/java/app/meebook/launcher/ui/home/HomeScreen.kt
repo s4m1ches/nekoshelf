@@ -30,6 +30,7 @@ import app.meebook.launcher.domain.Book
 import app.meebook.launcher.domain.Manga
 import app.meebook.launcher.domain.ShelfBuilder
 import app.meebook.launcher.domain.ShelfTab
+import app.meebook.launcher.ui.AboutDialog
 import app.meebook.launcher.ui.apps.AllAppsScreen
 import app.meebook.launcher.ui.stats.StatsScreen
 import java.io.File
@@ -38,6 +39,7 @@ import java.io.File
 sealed interface Overlay {
     data object AllApps : Overlay
     data object Stats : Overlay
+    data object About : Overlay
     data class DockPick(val index: Int) : Overlay
 }
 
@@ -70,6 +72,7 @@ interface HomeActions {
     fun requestStorage()
     fun showAllApps()
     fun showStats()
+    fun showAbout()
     fun pickDock(index: Int)
     fun setDock(index: Int, app: AppEntry)
     fun closeOverlay()
@@ -90,6 +93,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 toggles = toggles,
                 onRefresh = actions::fullRefresh,
                 onPictureSettled = actions::pictureSettled,
+                onAbout = actions::showAbout,
             )
             if (state.needsPermission) {
                 PermissionCard(actions::requestStorage, Modifier.padding(top = 6.dp))
@@ -97,6 +101,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
             StatsBlock(
                 books = data.bookStats,
                 manga = if (data.mangaAvailable) data.mangaStats else null,
+                mangaInstalled = data.mangaInstalled,
                 week = data.week,
                 today = data.today,
                 loaded = data.loaded,
@@ -109,6 +114,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 manga = data.nowManga,
                 mangaCover = data.nowManga?.let { data.mangaCovers[it.id] },
                 mangaAvailable = data.mangaAvailable,
+                mangaInstalled = data.mangaInstalled,
                 loaded = data.loaded,
                 onBook = actions::openBook,
                 onManga = actions::openManga,
@@ -123,7 +129,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 nav = state.nav,
                 emptyText = when {
                     !data.loaded -> ""
-                    state.tab == ShelfTab.MANGA && !data.mangaAvailable -> stringResource(R.string.empty_manga)
+                    state.tab == ShelfTab.MANGA && !data.mangaAvailable -> stringResource(mangaUnavailableText(data.mangaInstalled))
                     else -> null
                 },
                 onBook = actions::openBook,
@@ -146,6 +152,7 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions) {
                 nav = state.statsNav,
                 onDismiss = actions::closeOverlay,
             )
+            Overlay.About -> AboutDialog(onDismiss = actions::closeOverlay)
             is Overlay.DockPick -> AppPicker(
                 title = stringResource(R.string.dock_pick),
                 apps = state.allApps,

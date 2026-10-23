@@ -1,5 +1,6 @@
 package app.meebook.launcher.ui.home
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,14 @@ internal fun serif(sizeSp: Float, bold: Boolean = false, color: Color = Color.Bl
     lineHeight = (sizeSp * 1.18f).sp,
     color = color,
 )
+
+/**
+ * The empty-state text where «Манга» data would be: not installed, or installed but the BRIDGE
+ * permission is not granted (ruling R14).
+ */
+@StringRes
+internal fun mangaUnavailableText(installed: Boolean): Int =
+    if (installed) R.string.manga_no_access else R.string.empty_manga
 
 /** "3 140": digit groups separated by a narrow no-break space. */
 internal fun groupDigits(n: Long): String {

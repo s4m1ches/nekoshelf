@@ -40,6 +40,7 @@ import app.meebook.launcher.ui.theme.EinkTheme
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -66,6 +67,8 @@ class MainActivity : ComponentActivity(), HomeActions {
     private var startJob: Job? = null
     private var quietJob: Job? = null
     private var pictureSettled: CompletableDeferred<Unit>? = null
+    /** System.nanoTime() of the running refresh's start, for the timing log. */
+    private var refreshStart = 0L
     /** The storage dialog is shown automatically at most once per process (then via the card). */
     private var autoAsked = false
 
@@ -133,15 +136,20 @@ class MainActivity : ComponentActivity(), HomeActions {
         quietJob?.cancel()
         startJob = lifecycleScope.launch {
             val t0 = System.nanoTime()
+            refreshStart = t0
             val oldPicture = state.picture
             val settled = CompletableDeferred<Unit>()
             pictureSettled = settled
-            // The picture first: Coil decodes it (≈2 s for a big JPEG here) while the data loads.
+            // Data and picture in parallel: the load starts at once on IO, without waiting for the
+            // picture pick or for the main thread (busy with the first frame on a cold start), and
+            // runs while Coil decodes the picture (≈2 s for a big JPEG on a cold start).
+            val load = async(Dispatchers.IO) { loader.load() to apps.dockSlots() }
             val picture = if (newPicture) withContext(Dispatchers.IO) { pictures.next() } else oldPicture
             state.picture = picture
-            val (data, dock) = withContext(Dispatchers.IO) { loader.load() to apps.dockSlots() }
+            val (data, dock) = load.await()
             state.data = data
             state.dock = dock
+            Log.i(TAG, "data in ${(System.nanoTime() - t0) / 1_000_000} ms")
             if (!fullRefresh) return@launch
             // Wait until the new picture is drawn (or failed), then for that frame to be posted:
             // the full refresh must flash the new content, not the app we came back from.
@@ -264,6 +272,7 @@ class MainActivity : ComponentActivity(), HomeActions {
     override fun fullRefresh() = Eink.fullRefresh(this)
 
     override fun pictureSettled() {
+        if (pictureSettled?.isCompleted == false) Log.i(TAG, "picture settled in ${(System.nanoTime() - refreshStart) / 1_000_000} ms")
         pictureSettled?.complete(Unit)
     }
 
@@ -273,6 +282,10 @@ class MainActivity : ComponentActivity(), HomeActions {
         // Open on the current year (the newest page).
         state.statsNav.page = Int.MAX_VALUE
         state.overlay = Overlay.Stats
+    }
+
+    override fun showAbout() {
+        state.overlay = Overlay.About
     }
 
     override fun pickDock(index: Int) = showApps(Overlay.DockPick(index))

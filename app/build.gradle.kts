@@ -19,8 +19,8 @@ android {
         applicationId = "app.meebook.launcher"
         minSdk = 28
         targetSdk = 28
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
     }
 
     signingConfigs {
@@ -50,6 +50,10 @@ android {
     buildFeatures { compose = true }
 
     testOptions { unitTests.isIncludeAndroidResources = true }
+
+    // Target 28 is deliberate (WifiManager.setWifiEnabled; sideloaded, never on Google Play), so
+    // the release build's lint-vital check must not fail on it.
+    lint { disable += "ExpiredTargetSdkVersion" }
 }
 
 dependencies {
@@ -65,6 +69,9 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.16")
     testImplementation("androidx.test:core:1.6.1")
+    // Compose UI tests under Robolectric (gesture tests); the manifest artifact supplies the host activity.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 kotlin {

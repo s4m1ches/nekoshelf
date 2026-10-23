@@ -81,7 +81,7 @@ fun ShelfTabs(tab: ShelfTab, onTab: (ShelfTab) -> Unit, modifier: Modifier = Mod
             Box(
                 Modifier.weight(1f).fillMaxHeight()
                     .background(if (selected) Color.Black else Color.White)
-                    .clickable(role = Role.Tab) { if (!selected) onTab(t) },
+                    .noTapAfterSlop().clickable(role = Role.Tab) { if (!selected) onTab(t) },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(stringResource(label), style = serif(14.5f, bold = true, color = if (selected) Color.White else Color.Black))
@@ -246,7 +246,7 @@ private fun MangaOnShelf(item: MangaItem, slotW: Dp, bookH: Dp, covers: Map<Long
 @Composable
 private fun CoverOnShelf(slotW: Dp, bookH: Dp, onClick: () -> Unit, content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {
     Box(
-        Modifier.width(slotW * COVER_SLOTS).height(bookH).padding(end = 3.dp).clickable(onClick = onClick),
+        Modifier.width(slotW * COVER_SLOTS).height(bookH).padding(end = 3.dp).noTapAfterSlop().clickable(onClick = onClick),
         content = content,
     )
 }
@@ -263,6 +263,7 @@ private fun Spine(title: String, slotW: Dp, bookH: Dp, onClick: () -> Unit) {
         Modifier.width(slotW).height(height).padding(end = 1.5.dp)
             .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
             .background(shade)
+            .noTapAfterSlop()
             .clickable(onClick = onClick),
     ) {
         // A thin light band near the top, like the label strip on a real spine.

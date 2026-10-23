@@ -49,7 +49,7 @@ fun Dock(slots: List<AppEntry?>, onOpen: (AppEntry) -> Unit, onLongPress: (Int) 
         ) {
             slots.forEachIndexed { i, app ->
                 Column(
-                    Modifier.width(100.dp).combinedClickable(
+                    Modifier.width(100.dp).noTapAfterSlop().combinedClickable(
                         role = Role.Button,
                         onClickLabel = app?.label,
                         onLongClick = { onLongPress(i) },

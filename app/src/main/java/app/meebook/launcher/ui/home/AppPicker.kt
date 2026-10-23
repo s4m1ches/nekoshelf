@@ -64,7 +64,7 @@ fun AppPicker(title: String, apps: List<AppEntry>, onPick: (AppEntry) -> Unit, o
             ) {
                 for (app in pages.getOrNull(current).orEmpty()) {
                     Row(
-                        Modifier.fillMaxWidth().height(ROW).clickable { onPick(app) }.padding(horizontal = 6.dp),
+                        Modifier.fillMaxWidth().height(ROW).noTapAfterSlop().clickable { onPick(app) }.padding(horizontal = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         AppIcon(app, 40.dp)

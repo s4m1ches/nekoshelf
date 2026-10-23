@@ -35,6 +35,7 @@ import app.meebook.launcher.ui.home.Grey
 import app.meebook.launcher.ui.home.Pager
 import app.meebook.launcher.ui.home.ScreenPadding
 import app.meebook.launcher.ui.home.ShelfNav
+import app.meebook.launcher.ui.home.noTapAfterSlop
 import app.meebook.launcher.ui.home.outlinedCard
 import app.meebook.launcher.ui.home.serif
 import app.meebook.launcher.ui.home.swipes
@@ -109,6 +110,7 @@ private fun RowScope.AppCell(app: AppEntry, onOpen: (AppEntry) -> Unit, onDetail
     Box(Modifier.weight(1f).padding(horizontal = 3.dp)) {
         Column(
             Modifier.fillMaxWidth().height(CELL_HEIGHT).outlinedCard()
+                .noTapAfterSlop()
                 .combinedClickable(role = Role.Button, onLongClick = { onDetails(app) }, onClick = { onOpen(app) })
                 .padding(horizontal = 3.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

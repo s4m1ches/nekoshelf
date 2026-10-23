@@ -3,7 +3,11 @@ package app.meebook.launcher.data
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import androidx.test.core.app.ApplicationProvider
+import android.content.pm.PackageInfo
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.robolectric.Shadows.shadowOf
 import org.junit.Assert.assertNotNull
 import org.junit.Rule
 import org.junit.Test
@@ -46,6 +50,36 @@ class HomeLoaderTest {
         val stats = HomeLoader(context, koreaderRoot(pages = 40)).load().bookStats
         assertNotNull(stats)
         assertEquals(40L, stats!!.pagesTotal)
+    }
+
+    @Test
+    fun mangaInstalledWithoutPermissionIsInstalledButUnavailable() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val loader = HomeLoader(context, koreaderRoot(pages = 1))
+        assertFalse(loader.load().mangaInstalled)
+        shadowOf(context.packageManager).installPackage(PackageInfo().apply { packageName = "app.komikku.meebook" })
+        val data = loader.load()
+        assertTrue(data.mangaInstalled)
+        assertFalse(data.mangaAvailable)
+    }
+
+    @Test
+    fun statsAreReReadOnlyWhenTheDbChanges() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val root = koreaderRoot(pages = 5)
+        val reads = AtomicInteger(0)
+        val loader = HomeLoader(context, root) { db, zone, cache -> reads.incrementAndGet(); KoreaderStats.daily(db, zone, cache) }
+        assertEquals(5L, loader.load().bookStats!!.pagesTotal)
+        assertEquals(5L, loader.load().bookStats!!.pagesTotal)
+        assertEquals(1, reads.get())
+        // KOReader writes a page: the DB changes, so the next load reads it again.
+        val dbFile = File(root, "settings/statistics.sqlite3")
+        SQLiteDatabase.openDatabase(dbFile.path, null, SQLiteDatabase.OPEN_READWRITE).use {
+            it.execSQL("INSERT INTO page_stat_data VALUES (1, 99, ?, 30, 1000)", arrayOf<Any>(System.currentTimeMillis() / 1000))
+        }
+        dbFile.setLastModified(dbFile.lastModified() + 2_000)
+        assertEquals(6L, loader.load().bookStats!!.pagesTotal)
+        assertEquals(2, reads.get())
     }
 
     @Test

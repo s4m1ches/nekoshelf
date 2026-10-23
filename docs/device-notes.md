@@ -29,11 +29,13 @@ the owner's device on 2026-10-23.
 
 - The app targets API 28 on purpose so `WifiManager.setWifiEnabled` still works on
   Android 11.
-- **Airplane mode blocks it.** In airplane mode Android 11 refuses with
-  `WifiService: setWifiEnabled in Airplane mode: only Settings can toggle wifi` and
-  returns false, even at target 28. The owner keeps airplane mode on with Wi‑Fi on, so
-  in practice the Wi‑Fi tap falls back to `Settings.Panel.ACTION_WIFI` (the system
-  bottom sheet with the Wi‑Fi switch). Long-press opens `Settings.ACTION_WIFI_SETTINGS`.
+- The owner has turned **airplane mode off** (2026-10-23), so the Wi‑Fi icon is a true
+  one-tap on/off toggle — confirmed on the device. Long-press opens
+  `Settings.ACTION_WIFI_SETTINGS`.
+- **Airplane mode blocks it.** If airplane mode is ever turned on again, Android 11 refuses
+  with `WifiService: setWifiEnabled in Airplane mode: only Settings can toggle wifi` and
+  returns false, even at target 28. Only then does the tap fall back to
+  `Settings.Panel.ACTION_WIFI` (the system bottom sheet with the Wi‑Fi switch: one extra tap).
 - To follow the state, the header listens to `WIFI_STATE_CHANGED`. Register it
   **exported**: below API 33 `ContextCompat.RECEIVER_NOT_EXPORTED` guards the receiver
   with an app-private permission, and the system broadcast is then denied
@@ -64,6 +66,33 @@ the owner's device on 2026-10-23.
   open closes the parked ReaderUI first (`ReaderUI instance mismatch!`), and the plugin's
   close hook re-shows the shelf over the newly opened book. Seen once on 2026-10-23; the
   next open showed the book at its saved position.
+
+## Default home (launcher)
+
+- HOME candidates on this firmware (`adb shell cmd package query-activities --brief -a
+  android.intent.action.MAIN -c android.intent.category.HOME`, checked 2026-10-23):
+  `com.haoqing.app.hqreader/.view.activity.LauncherActivity` (the stock home),
+  `app.meebook.launcher/.MainActivity` and `com.android.settings/.FallbackHome`. The stock
+  home's HOME entry point is `LauncherActivity`; `LauncherMainActivity` is its main screen
+  (not a HOME activity — it does not take part in the home choice).
+- To make «Лаунчер» the home: press HOME and pick «Лаунчер» → «Всегда» (owner step), or
+  `adb shell cmd package set-home-activity app.meebook.launcher/.MainActivity`.
+- **To go back to the stock home:**
+  - `adb shell cmd package set-home-activity com.haoqing.app.hqreader/.view.activity.LauncherActivity`
+  - or on the device: Настройки → Приложения → Приложения по умолчанию → «Главный экран» →
+    the stock launcher (the same screen opens with
+    `adb shell am start -a android.settings.MANAGE_DEFAULT_APPS_SETTINGS`; on 2026-10-23 it
+    showed «Главный экран: Нет», i.e. no default chosen yet).
+  - Uninstalling «Лаунчер» also returns HOME to the stock launcher.
+- Opening the stock home's main screen directly (without changing the default):
+  `adb shell am start -n com.haoqing.app.hqreader/com.haoqing.app.hqreader.view.activity.LauncherMainActivity`.
+
+## «Манга» provider cold start
+
+- When the «Манга» process is not running, its bridge provider takes several seconds to
+  answer the first query (one cold start measured 7.3 s on 2026-10-23: `HomeLoader … bridge=7351ms`).
+  The home screen waits for it before the full refresh; with «Манга» already running the
+  bridge part takes 0.25–0.5 s.
 
 ## Screenshots
 

@@ -47,7 +47,8 @@ private val COVER_H = 68.dp
 /**
  * «Сейчас читаю»: the most recently read KOReader book and «Манга» title as two outlined cards
  * (cover, title, position, progress bar). Tapping a card opens it. Empty states:
- * «KOReader ещё не открывал книги» and «Манга не установлена».
+ * «KOReader ещё не открывал книги», «В «Манге» ещё ничего не читали», and «Манга не установлена» /
+ * «Нет доступа к «Манге»» when [mangaInstalled] but the bridge permission is missing.
  */
 @Composable
 fun NowReading(
@@ -56,6 +57,7 @@ fun NowReading(
     manga: Manga?,
     mangaCover: File?,
     mangaAvailable: Boolean,
+    mangaInstalled: Boolean,
     loaded: Boolean,
     onBook: (Book) -> Unit,
     onManga: (Manga) -> Unit,
@@ -101,7 +103,7 @@ fun NowReading(
                 )
             } else {
                 EmptyCard(
-                    stringResource(if (mangaAvailable) R.string.empty_manga_history else R.string.empty_manga),
+                    stringResource(if (mangaAvailable) R.string.empty_manga_history else mangaUnavailableText(mangaInstalled)),
                     cardMod,
                 )
             }
@@ -112,7 +114,7 @@ fun NowReading(
 @Composable
 private fun ReadingCard(title: String, cover: File?, line: String, progress: Float, onClick: () -> Unit, modifier: Modifier) {
     Row(
-        modifier.outlinedCard().clickable(onClick = onClick).padding(7.dp),
+        modifier.outlinedCard().noTapAfterSlop().clickable(onClick = onClick).padding(7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CoverImage(cover, title, COVER_W, COVER_H)

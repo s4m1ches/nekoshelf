@@ -27,6 +27,8 @@ data class HomeData(
     val books: List<Book>,
     val manga: List<Manga>,
     val mangaAvailable: Boolean,
+    /** «Манга» is installed; with ![mangaAvailable] that means the BRIDGE permission is missing. */
+    val mangaInstalled: Boolean = mangaAvailable,
     /** null when KOReader has no statistics database. */
     val bookStats: StatsSummary?,
     /** null when «Манга» is not available. */
@@ -76,6 +78,8 @@ class HomeLoader(
     val bridge = MangaBridge(appContext)
     private val bookCovers = BookCovers(File(cacheDir, "covers"), COVER_PX)
     private val mangaCovers = MangaCovers(cacheDir) { bridge.cover(it) }
+    /** Last KOReader stats read, keyed on the DB files' size + mtime (and the zone). Under [LOCK]. */
+    private var statsMemo: Pair<List<Any>, List<DayStat>>? = null
 
     fun load(): HomeData = synchronized(LOCK) { loadLocked() }
 
@@ -91,11 +95,12 @@ class HomeLoader(
             Book.from(bf, Sidecar.read(bf.file), opened[bf.file.absolutePath])
         }
         val bookDb = File(koreaderRoot, "settings/statistics.sqlite3")
-        val bookDays = readStats(bookDb, zone, cacheDir)
+        val bookDays = bookDays(bookDb, zone)
         val t1 = SystemClock.elapsedRealtime()
 
         // available() first: without «Манга» every bridge call would cost a 300 ms retry.
-        val mangaAvailable = bridge.available()
+        val mangaInstalled = bridge.installed()
+        val mangaAvailable = mangaInstalled && bridge.available()
         var manga: List<Manga> = emptyList()
         var mangaDays: List<DayStat> = emptyList()
         var mangaStats: StatsSummary? = null
@@ -129,6 +134,7 @@ class HomeLoader(
             books = books,
             manga = manga,
             mangaAvailable = mangaAvailable,
+            mangaInstalled = mangaInstalled,
             bookStats = if (bookDb.isFile) StatsCalc.summary(bookDays, today) else null,
             mangaStats = mangaStats,
             week = StatsCalc.week(bookDays, mangaDays, today),
@@ -143,6 +149,17 @@ class HomeLoader(
             mangaDays = mangaDays,
             mangaBackfilled = mangaBackfilled,
         )
+    }
+
+    /**
+     * KOReader's daily stats, re-read (DB copied and queried) only when statistics.sqlite3 or its
+     * -wal changed since the last load: most returns to home follow no reading at all.
+     */
+    private fun bookDays(db: File, zone: ZoneId): List<DayStat> {
+        val key = listOf<Any>(zone) + listOf("", "-wal").flatMap { File(db.path + it).let { f -> listOf(f.length(), f.lastModified()) } }
+        statsMemo?.let { (k, days) -> if (k == key) return days }
+        // An empty read of an existing DB may be a transient failure: don't keep it.
+        return readStats(db, zone, cacheDir).also { if (it.isNotEmpty() || !db.isFile) statsMemo = key to it }
     }
 
     companion object {

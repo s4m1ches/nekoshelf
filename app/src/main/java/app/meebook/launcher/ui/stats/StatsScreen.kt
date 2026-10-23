@@ -44,6 +44,7 @@ import app.meebook.launcher.ui.home.ScreenPadding
 import app.meebook.launcher.ui.home.ShelfNav
 import app.meebook.launcher.ui.home.durationText
 import app.meebook.launcher.ui.home.groupDigits
+import app.meebook.launcher.ui.home.mangaUnavailableText
 import app.meebook.launcher.ui.home.outlinedCard
 import app.meebook.launcher.ui.home.serif
 import app.meebook.launcher.ui.home.swipes
@@ -104,7 +105,7 @@ fun StatsScreen(data: HomeData, nav: ShelfNav, onDismiss: () -> Unit) {
             title = stringResource(R.string.stats_manga),
             days = data.mangaDays, year = year, today = data.today,
             note = if (data.mangaBackfilled && data.mangaDays.any { it.day.year == year }) stringResource(R.string.stats_manga_backfilled) else null,
-            unavailable = if (!data.mangaAvailable) stringResource(R.string.stats_manga_none) else null,
+            unavailable = if (!data.mangaAvailable) stringResource(mangaUnavailableText(data.mangaInstalled)) else null,
         )
         Spacer(Modifier.weight(1f))
         Legend()

@@ -23,8 +23,16 @@ class MangaBridge(context: Context, private val retryDelayMs: Long = 300) {
     private val appContext = context.applicationContext ?: context
     private val resolver = appContext.contentResolver
 
-    fun available(): Boolean = try {
+    /** «Манга» is installed (whether or not this app may read it). */
+    fun installed(): Boolean = try {
         appContext.packageManager.getPackageInfo(PACKAGE, 0)
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+    /** Installed and the BRIDGE signature permission is granted: the provider can be read. */
+    fun available(): Boolean = installed() && try {
         appContext.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED
     } catch (_: Exception) {
         false

@@ -34,7 +34,8 @@ private val ZERO = StatsSummary(0, 0, 0, 0)
 /**
  * Two outlined blocks side by side, «Книги» and «Манга», each with today's and the total pages
  * and reading time, and under them the week's reading minutes (books + manga, Monday first,
- * today's bar outlined). [manga] null means «Манга» is not installed. Until [loaded] the
+ * today's bar outlined). [manga] null means «Манга» is not available
+ * (not installed, or — with [mangaInstalled] — no bridge permission). Until [loaded] the
  * blocks show only their titles (no premature zeros or empty states). Tapping a block opens the
  * year heatmap screen ([onOpenStats]).
  */
@@ -42,6 +43,7 @@ private val ZERO = StatsSummary(0, 0, 0, 0)
 fun StatsBlock(
     books: StatsSummary?,
     manga: StatsSummary?,
+    mangaInstalled: Boolean,
     week: List<Pair<LocalDate, Int>>,
     today: LocalDate,
     loaded: Boolean,
@@ -53,16 +55,16 @@ fun StatsBlock(
             StatCard(
                 stringResource(R.string.stats_books), books ?: ZERO,
                 if (!loaded) "" else null,
-                Modifier.weight(1f).fillMaxHeight().clickable(role = Role.Button, onClick = onOpenStats),
+                Modifier.weight(1f).fillMaxHeight().noTapAfterSlop().clickable(role = Role.Button, onClick = onOpenStats),
             )
             StatCard(
                 stringResource(R.string.stats_manga), manga ?: ZERO,
                 when {
                     !loaded -> ""
-                    manga == null -> stringResource(R.string.empty_manga)
+                    manga == null -> stringResource(mangaUnavailableText(mangaInstalled))
                     else -> null
                 },
-                Modifier.weight(1f).fillMaxHeight().clickable(role = Role.Button, onClick = onOpenStats),
+                Modifier.weight(1f).fillMaxHeight().noTapAfterSlop().clickable(role = Role.Button, onClick = onOpenStats),
             )
         }
         WeekBars(week, today, Modifier.padding(top = 4.dp))

@@ -96,7 +96,8 @@ private val DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM", RU)
  * Russian date top-left, three round toggles top-right (Wi‑Fi, frontlight, full
  * refresh; filled = on; long-press opens the system screen) with the battery % under
  * them, and the [decor] catgirl standing in the strip above the frame, on its top edge.
- * [onPictureSettled] fires once the picture has been drawn or has failed to load.
+ * [onPictureSettled] fires once the picture has been drawn or has failed to load; a long-press
+ * on the clock calls [onAbout].
  *
  * The clock ticks once a minute while the screen is started; toggle states and battery
  * are re-read then too, and Wi‑Fi follows WIFI_STATE_CHANGED.
@@ -109,6 +110,7 @@ fun Header(
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
     onPictureSettled: () -> Unit = {},
+    onAbout: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -170,10 +172,12 @@ fun Header(
         onRefresh = onRefresh,
         modifier = modifier,
         onPictureSettled = onPictureSettled,
+        onClockLongPress = onAbout,
     )
 }
 
 /** Stateless header layout; [Header] feeds it. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun HeaderContent(
     picture: File?,
@@ -190,6 +194,7 @@ internal fun HeaderContent(
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
     onPictureSettled: () -> Unit = {},
+    onClockLongPress: () -> Unit = {},
 ) {
     val headerHeight = LocalConfiguration.current.screenHeightDp.dp * HEADER_SHARE
     val stage = headerHeight * STAGE_SHARE
@@ -217,7 +222,16 @@ internal fun HeaderContent(
                     onError = { pictureShown = false; onPictureSettled() },
                 )
             }
-            Column(Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 6.dp)) {
+            // Long-press on the clock: «О приложении». A plain tap does nothing.
+            Column(
+                Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 6.dp)
+                    .noTapAfterSlop()
+                    .combinedClickable(
+                        onLongClickLabel = stringResource(R.string.about_title),
+                        onLongClick = onClockLongPress,
+                        onClick = {},
+                    ),
+            ) {
                 OutlinedText(time, 46, FontWeight.Bold, outlined = pictureShown)
                 OutlinedText(date, 17, FontWeight.Bold, outlined = pictureShown)
             }
