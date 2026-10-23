@@ -27,6 +27,12 @@ data class BackupStatus(
     val inboxReceived: Int = 0,
     /** The last inbox check's error text; null when it went fine. */
     val inboxError: String? = null,
+    /**
+     * A sign-in failure (HTTP 401 / [app.nekoshelf.launcher.backup.drive.DriveAuthException], never a
+     * 403 or error text) ended an inbox run: the wake skips the inbox until the owner turns the
+     * checkbox on again ([BackupStore.inboxEnabled]).
+     */
+    val inboxNeedsReauth: Boolean = false,
 ) {
     companion object {
         val EMPTY = BackupStatus(
@@ -49,6 +55,7 @@ data class BackupStatus(
             inboxLastCheckAt = null,
             inboxReceived = 0,
             inboxError = null,
+            inboxNeedsReauth = false,
         )
     }
 }

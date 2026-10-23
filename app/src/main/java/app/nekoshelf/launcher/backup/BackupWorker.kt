@@ -105,13 +105,10 @@ fun koreaderHomeDir(): File = KoreaderPaths(koreaderRoot()).homeDir()
  * asks only it (none → [DriveAuthException], the inbox's error).
  */
 fun backupRunner(app: Context, store: BackupStore, token: () -> String?, readonlyToken: (() -> String?)? = null): BackupRunner {
-    fun drive(t: () -> String?) = DriveRest(token = { t() ?: throw DriveAuthException("token unavailable") })
-    val inbox = readonlyToken?.let { ro ->
-        InboxRunner(drive(ro), store, ::koreaderHomeDir, { it.usableSpace }, System::currentTimeMillis)
-    }
+    val inbox = readonlyToken?.let { inboxRunner(store, it) }
     val backupToken = readonlyToken?.let { ReadonlyFallbackToken(it, token) }
     return BackupRunner(
-        drive = drive(backupToken ?: token),
+        drive = driveOn(backupToken ?: token),
         store = store,
         koreaderRoot = koreaderRoot(),
         homeDir = ::koreaderHomeDir,
@@ -126,6 +123,16 @@ fun backupRunner(app: Context, store: BackupStore, token: () -> String?, readonl
         readonlyLost = { backupToken?.lost },
     )
 }
+
+/** Drive on [token]; a missing token is a [DriveAuthException]. */
+private fun driveOn(token: () -> String?) = DriveRest(token = { token() ?: throw DriveAuthException("token unavailable") })
+
+/**
+ * The inbox on the real Drive and the KOReader books home, asking only the [readonlyToken]
+ * (none → [DriveAuthException]); shared by the backup's inbox step and [InboxWorker].
+ */
+fun inboxRunner(store: BackupStore, readonlyToken: () -> String?): InboxRunner =
+    InboxRunner(driveOn(readonlyToken), store, ::koreaderHomeDir, { it.usableSpace }, System::currentTimeMillis)
 
 /**
  * The backup's token while the readonly grant is in use: the [readonly] one; once that gives none

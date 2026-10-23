@@ -95,17 +95,24 @@ class InboxRunner(
         val start = store.load()
         val now = clock()
         val pass = Pass(hadBackup = start.lastSuccessAt != null)
+        var authLost = false
         val fatal = try {
             pass.check()
             null
         } catch (e: Exception) {
+            authLost = e is DriveAuthException
             inboxErrorText(e)
         }
         val error = fatal ?: pass.firstError ?: if (pass.lowSpace) INBOX_ERROR_LOW_SPACE else null
         store.update { cur ->
             // Signed out or another account since the start: this check means nothing for it.
             if (!cur.signedIn || cur.account != start.account) return@update cur
-            cur.copy(inboxLastCheckAt = now, inboxReceived = pass.received, inboxError = error)
+            cur.copy(
+                inboxLastCheckAt = now,
+                inboxReceived = pass.received,
+                inboxError = error,
+                inboxNeedsReauth = cur.inboxNeedsReauth || authLost,
+            )
         }
         return InboxResult(pass.received, pass.skipped, error)
     }
@@ -274,10 +281,13 @@ private class InboxFailure(val text: String) : Exception(text)
 /**
  * Records an inbox check that could not run at all (e.g. no readonly token for this run) as the
  * inbox's error; the backup's own fields are untouched. The text comes from [inboxErrorText], so
- * the failure is classified by its exception class (a [DriveAuthException] is lost access).
+ * the failure is classified by its exception class (a [DriveAuthException] is lost access). Only a
+ * [DriveAuthException] also sets [BackupStatus.inboxNeedsReauth] (never a 403 or a token hiccup).
  */
 internal fun recordInboxFailure(store: BackupStore, e: Exception) {
-    store.update { it.copy(inboxError = inboxErrorText(e)) }
+    store.update {
+        it.copy(inboxError = inboxErrorText(e), inboxNeedsReauth = it.inboxNeedsReauth || e is DriveAuthException)
+    }
 }
 
 /**

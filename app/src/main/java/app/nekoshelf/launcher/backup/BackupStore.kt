@@ -33,6 +33,7 @@ class BackupStore(context: Context) : ResumeStore {
             inboxLastCheckAt = long(INBOX_LAST_CHECK_AT),
             inboxReceived = prefs.getInt(INBOX_RECEIVED, 0),
             inboxError = prefs.getString(INBOX_ERROR, null),
+            inboxNeedsReauth = prefs.getBoolean(INBOX_NEEDS_REAUTH, false),
         )
     }
 
@@ -59,6 +60,7 @@ class BackupStore(context: Context) : ResumeStore {
                 .putOrRemove(INBOX_LAST_CHECK_AT, s.inboxLastCheckAt)
                 .putInt(INBOX_RECEIVED, s.inboxReceived)
                 .putString(INBOX_ERROR, s.inboxError)
+                .putBoolean(INBOX_NEEDS_REAUTH, s.inboxNeedsReauth)
                 .commit()
         }
     }
@@ -71,6 +73,14 @@ class BackupStore(context: Context) : ResumeStore {
     /** The owner signed in: a failure from before (e.g. the revoked-access error) no longer counts. */
     fun signedIn(account: String?, nowMs: Long) {
         update { it.copy(signedIn = true, account = account, signedInAt = nowMs, lastFailureAt = null, lastError = null) }
+    }
+
+    /**
+     * The «Забирать новые книги» checkbox. Turning it on (the readonly grant was just given) also
+     * clears [BackupStatus.inboxNeedsReauth], so the wake checks the inbox again.
+     */
+    fun inboxEnabled(enabled: Boolean) {
+        update { it.copy(inboxEnabled = enabled, inboxNeedsReauth = if (enabled) false else it.inboxNeedsReauth) }
     }
 
     /** Forgets the account, its Drive counts and any upload sessions (they belong to that account). */
@@ -146,6 +156,7 @@ class BackupStore(context: Context) : ResumeStore {
         const val INBOX_LAST_CHECK_AT = "inboxLastCheckAt"
         const val INBOX_RECEIVED = "inboxReceived"
         const val INBOX_ERROR = "inboxError"
+        const val INBOX_NEEDS_REAUTH = "inboxNeedsReauth"
         const val INBOX_SEEN = "inboxSeen"
     }
 }

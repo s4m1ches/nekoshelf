@@ -5,11 +5,13 @@ import android.content.Intent
 import android.os.BatteryManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
+import androidx.work.NetworkType
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -137,6 +139,108 @@ class BackupTriggerTest {
         assertTrue(work().isEmpty())
         queued.forEach { it.run() }
         assertEquals(1, work().size)
+    }
+
+    // ---- the inbox ----------------------------------------------------------------------------
+
+    private fun inboxWork(): List<WorkInfo> =
+        WorkManager.getInstance(context).getWorkInfosForUniqueWork("inbox").get()
+
+    private fun inboxOn() {
+        store.update { it.copy(inboxEnabled = true) }
+    }
+
+    @Test
+    fun wakeEnqueuesInboxWhenEnabled() {
+        inboxOn()
+        BackupTrigger.onWake(context)
+        BackupTrigger.onWake(context) // KEEP: still one
+        val w = inboxWork()
+        assertEquals(1, w.size)
+        assertEquals(WorkInfo.State.ENQUEUED, w[0].state)
+        assertEquals(NetworkType.UNMETERED, w[0].constraints.requiredNetworkType)
+        assertTrue("auto" in w[0].tags)
+    }
+
+    @Test
+    fun wakeInboxIsIndependentOfTheBackupRule() {
+        inboxOn()
+        battery(percent = 20, charging = false) // the backup wants 70 %, the inbox only 15 %
+        store.update { it.copy(lastError = BACKUP_ERROR_AUTH, failedAutoDay = "2026-10-23", failedAutoAttempts = 9) }
+        BackupTrigger.onWake(context)
+        assertTrue(work().isEmpty())
+        assertEquals(1, inboxWork().size)
+    }
+
+    @Test
+    fun wakeSkipsInboxBelow15PercentUnlessCharging() {
+        inboxOn()
+        battery(percent = 14, charging = false)
+        BackupTrigger.onWake(context)
+        assertTrue(inboxWork().isEmpty())
+        battery(percent = 14, charging = true)
+        BackupTrigger.onWake(context)
+        assertEquals(1, inboxWork().size)
+    }
+
+    @Test
+    fun wakeEnqueuesInboxAtExactly15Percent() {
+        inboxOn()
+        battery(percent = 15, charging = false)
+        BackupTrigger.onWake(context)
+        assertEquals(1, inboxWork().size)
+    }
+
+    @Test
+    fun holdPausesInbox() {
+        inboxOn()
+        store.update { it.copy(restoreOfferPending = true) }
+        BackupTrigger.onWake(context)
+        assertTrue(inboxWork().isEmpty())
+    }
+
+    @Test
+    fun checkboxOffNoInboxWork() {
+        BackupTrigger.onWake(context)
+        assertTrue(inboxWork().isEmpty())
+    }
+
+    @Test
+    fun signedOutNoInboxWork() {
+        inboxOn()
+        store.update { it.copy(signedIn = false) }
+        BackupTrigger.onWake(context)
+        assertTrue(inboxWork().isEmpty())
+    }
+
+    @Test
+    fun needsReauthStopsWakeUntilReEnabled() {
+        inboxOn()
+        store.update { it.copy(inboxNeedsReauth = true) }
+        BackupTrigger.onWake(context)
+        assertTrue(inboxWork().isEmpty())
+        store.inboxEnabled(true)
+        assertFalse(store.load().inboxNeedsReauth)
+        BackupTrigger.onWake(context)
+        assertEquals(1, inboxWork().size)
+    }
+
+    @Test
+    fun checkNowEnqueuesWithConnectedNetwork() {
+        battery(percent = 5, charging = false)
+        BackupTrigger.checkInboxNow(context)
+        val w = inboxWork()
+        assertEquals(1, w.size)
+        assertEquals(NetworkType.CONNECTED, w[0].constraints.requiredNetworkType)
+        assertTrue("manual" in w[0].tags)
+    }
+
+    @Test
+    fun checkNowDuringWakeWorkIsQueuedAfterIt() {
+        inboxOn()
+        BackupTrigger.onWake(context)
+        BackupTrigger.checkInboxNow(context)
+        assertEquals(2, inboxWork().size)
     }
 
     private companion object {
