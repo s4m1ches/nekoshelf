@@ -8,10 +8,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -42,14 +46,16 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-/** The unique backup work as WorkManager reports it (ruling R22). */
+/** A unique work (the backup's, or the inbox's two together) as WorkManager reports it (ruling R22). */
 enum class BackupWork { IDLE, ENQUEUED, RUNNING }
 
 /**
  * What the backup screen shows beside the stored [BackupStatus]: the work's state, the result of
  * the last action ([message]), the date for the restore offer, [busy] while a sign-in,
- * restore or «Манга» save is under way (its buttons are then disabled), and [restoring] while a
- * restore holds backups (from «Восстановить…» until it ends; the offer card is hidden then).
+ * restore, «Манга» save or turning the inbox on is under way (its buttons and the checkbox are then
+ * disabled), and [restoring] while a restore holds backups (from «Восстановить…» until it ends; the
+ * offer card is hidden then). [inboxWork] is the inbox checks' state (works "inbox" and
+ * "inbox-manual" together); [inboxMessage] says why turning the inbox on failed.
  */
 data class BackupUi(
     val work: BackupWork = BackupWork.IDLE,
@@ -57,6 +63,8 @@ data class BackupUi(
     val offerDate: LocalDate? = null,
     val busy: Boolean = false,
     val restoring: Boolean = false,
+    val inboxWork: BackupWork = BackupWork.IDLE,
+    val inboxMessage: String? = null,
 )
 
 /** What the backup screen and the restore dialog ask the activity to do. */
@@ -70,6 +78,10 @@ interface BackupActions {
     fun confirmRestore()
     fun saveMangaBackup()
     fun closeRestore()
+    /** The «Забирать новые книги с Диска» checkbox: on asks Google for the readonly grant first. */
+    fun setInboxEnabled(on: Boolean)
+    /** «Проверить новые книги». */
+    fun checkInboxNow()
 }
 
 private val RU = Locale.forLanguageTag("ru")
@@ -108,8 +120,10 @@ internal fun ruPlural(n: Int, one: String, few: String, many: String): String {
  * «Бэкап в Google Диск» (from the «☁ Бэкап» button in all apps), as in the approved mockup, top to
  * bottom: the account (or «Войти в Google»), the restore offer while it is pending, the last
  * backup (or what failed and when), snapshot counts, books on Drive, the next run, the work's
- * state, «Сделать сейчас» / «Восстановить…», and the last action's [BackupUi.message]. Text only —
- * no spinner, no animation. Back, «Закрыть» or a swipe down closes it.
+ * state, «Сделать сейчас» / «Проверить новые книги» / «Восстановить…», and the last action's
+ * [BackupUi.message]. Under the account: the «Забирать новые книги с Диска» checkbox and, while it
+ * is on, the inbox's last check. Text only — no spinner, no animation. Back, «Закрыть» or a swipe
+ * down closes it.
  */
 @Composable
 fun BackupScreen(
@@ -120,6 +134,8 @@ fun BackupScreen(
     onDismiss: () -> Unit,
     ui: BackupUi = BackupUi(),
     onDeclineOffer: () -> Unit = {},
+    onInboxToggle: (Boolean) -> Unit = {},
+    onCheckInbox: () -> Unit = {},
     nowMs: Long = System.currentTimeMillis(),
     zone: ZoneId = ZoneId.systemDefault(),
 ) {
@@ -146,6 +162,26 @@ fun BackupScreen(
         Line(stringResource(R.string.backup_account, status.account ?: stringResource(R.string.backup_account_unknown)))
         if (authLost) {
             FilledButton(stringResource(R.string.backup_sign_in), enabled = !ui.busy, onClick = onSignIn, modifier = Modifier.padding(vertical = 6.dp))
+        }
+
+        // A sign-in failure waiting for a re-enable shows the box off: a tap runs the turn-on again.
+        val inboxOn = status.inboxEnabled && !status.inboxNeedsReauth
+        CheckboxRow(stringResource(R.string.inbox_checkbox), checked = inboxOn, enabled = !ui.busy, onChange = onInboxToggle)
+        val inboxProblem = if (status.inboxNeedsReauth) stringResource(R.string.inbox_no_access) else ui.inboxMessage
+        if (inboxProblem != null) Text(inboxProblem, style = serif(15f, bold = true), modifier = Modifier.padding(top = 2.dp))
+        if (inboxOn) {
+            val checked = status.inboxLastCheckAt
+            Line(
+                if (checked == null) {
+                    stringResource(R.string.inbox_never)
+                } else {
+                    stringResource(
+                        R.string.inbox_status,
+                        backupTimeText(checked, nowMs, zone),
+                        status.inboxError ?: stringResource(R.string.inbox_received, status.inboxReceived),
+                    )
+                },
+            )
         }
 
         // «Восстановить…» (both) waits while a run is queued or running: a queued run starts as soon
@@ -205,14 +241,48 @@ fun BackupScreen(
                 onClick = onBackupNow,
                 modifier = Modifier.weight(1f),
             )
+            // Likewise while an inbox check is queued or running; and only while the inbox can run.
+            OutlinedButton(
+                stringResource(R.string.inbox_check),
+                enabled = inboxCheckEnabled(status, ui),
+                onClick = onCheckInbox,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(
                 stringResource(R.string.backup_restore),
                 enabled = restoreEnabled,
                 onClick = onRestore,
                 modifier = Modifier.weight(1f),
             )
+            Spacer(Modifier.weight(1f))
         }
         Message(ui.message)
+    }
+}
+
+/**
+ * «Проверить новые книги» may be pressed: the inbox is on and needs no re-enable, no inbox check is
+ * queued or running, nothing else is under way, and no restore offer holds the app.
+ */
+internal fun inboxCheckEnabled(status: BackupStatus, ui: BackupUi): Boolean =
+    status.inboxEnabled && !status.inboxNeedsReauth && ui.inboxWork == BackupWork.IDLE && !ui.busy && !status.restoreOfferPending
+
+/** A square box (filled inside when [checked]) and its label; the whole row toggles. No animation. */
+@Composable
+private fun CheckboxRow(text: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    val color = if (enabled) Color.Black else DisabledGrey
+    Row(
+        Modifier.padding(top = 8.dp).fillMaxWidth()
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(24.dp).border(CardBorder, color, RoundedCornerShape(4.dp)).padding(5.dp)) {
+            if (checked) Box(Modifier.fillMaxSize().background(color))
+        }
+        Text(text, style = serif(15f, color = color), modifier = Modifier.padding(start = 10.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 

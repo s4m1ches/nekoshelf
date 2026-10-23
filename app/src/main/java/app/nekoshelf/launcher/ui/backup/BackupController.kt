@@ -1,7 +1,9 @@
 package app.nekoshelf.launcher.ui.backup
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.media.MediaScannerConnection
 import android.os.Environment
 import android.util.Log
@@ -20,6 +22,8 @@ import app.nekoshelf.launcher.backup.BackupRunner
 import app.nekoshelf.launcher.backup.BackupStatus
 import app.nekoshelf.launcher.backup.BackupStore
 import app.nekoshelf.launcher.backup.BackupTrigger
+import app.nekoshelf.launcher.backup.BookNeedsInboxException
+import app.nekoshelf.launcher.backup.RESTORE_HINT_INBOX
 import app.nekoshelf.launcher.backup.RestoreFailedException
 import app.nekoshelf.launcher.backup.RestorePlan
 import app.nekoshelf.launcher.backup.applyRestore
@@ -35,6 +39,7 @@ import app.nekoshelf.launcher.ui.home.HomeState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -42,26 +47,52 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.LocalDate
 
+/**
+ * The inbox's `drive.readonly` authorization ([GoogleAuth] in the app). Everything but
+ * [tokenFromResult] blocks: call it off the main thread.
+ */
+interface ReadonlyAuth {
+    /** The consent UI that adds drive.readonly, or null when none is needed (or Play services fail). */
+    fun intent(activity: Activity): PendingIntent?
+    /** The access token in the result of the UI from [intent]; null when there is none. */
+    fun tokenFromResult(data: Intent): String?
+    /** Whether drive.readonly is granted now (any failure: no). */
+    fun granted(): Boolean
+    /** A drive.file + drive.readonly token without UI, as [GoogleAuth.silentToken] gives it. */
+    fun token(): String?
+}
+
 /** What [BackupController] works on; tests swap in a fake Drive, temp folders and an inline dispatcher. */
 class BackupDeps(
     val store: BackupStore,
-    /** A runner whose Drive asks [token] before every call. */
-    val runner: (token: () -> String?) -> BackupRunner,
+    /**
+     * A runner whose Drive asks [token] before every call; with [readonlyToken] (drive.file +
+     * drive.readonly) it may also look at the owner's own files, see [backupRunner].
+     */
+    val runner: (token: () -> String?, readonlyToken: (() -> String?)?) -> BackupRunner,
     val koreaderRoot: () -> File,
     val homeDir: () -> File,
     val downloads: () -> File,
     val io: CoroutineDispatcher,
+    val readonly: ReadonlyAuth,
 ) {
     companion object {
         fun real(app: Context): BackupDeps {
             val store = BackupStore(app)
+            val auth = GoogleAuth(app)
             return BackupDeps(
                 store = store,
-                runner = { token -> backupRunner(app, store, token) },
+                runner = { token, readonly -> backupRunner(app, store, token, readonly) },
                 koreaderRoot = ::koreaderRoot,
                 homeDir = ::koreaderHomeDir,
                 downloads = { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) },
                 io = Dispatchers.IO,
+                readonly = object : ReadonlyAuth {
+                    override fun intent(activity: Activity) = auth.readonlyIntent(activity)
+                    override fun tokenFromResult(data: Intent) = auth.tokenFromResult(data)
+                    override fun granted() = auth.hasReadonly()
+                    override fun token() = auth.silentToken(withReadonly = true)
+                },
             )
         }
     }
@@ -83,7 +114,12 @@ class BackupDeps(
  * runs ([BackupTrigger.onWake]): the backup it held may be due. All flag writes go one at a time,
  * in call order ([writeFlag]).
  *
- * Construct it in `onCreate` (it registers the sign-in result launcher).
+ * «Забирать новые книги с Диска» ([setInboxEnabled]): on asks Google for drive.readonly first (the
+ * consent UI when needed, with the same launcher pattern as the sign-in) and is stored only once the
+ * grant is there, then checks at once; a refusal leaves it off with «нет доступа к Диску — включите
+ * заново». Off is only stored (the grant stays; the owner can revoke it in their Google account).
+ *
+ * Construct it in `onCreate` (it registers the sign-in and readonly-consent result launchers).
  */
 class BackupController(
     private val activity: ComponentActivity,
@@ -96,7 +132,7 @@ class BackupController(
     private val auth = GoogleAuth(app)
     private val scope get() = activity.lifecycleScope
 
-    /** The Google sign-in UI is up: the coming onStart must keep the backup screen open. */
+    /** The Google sign-in (or readonly consent) UI is up: the coming onStart must keep the backup screen open. */
     var signInPending = false
         private set
 
@@ -112,20 +148,35 @@ class BackupController(
     private val signInLauncher =
         activity.registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult(), ::onSignInResult)
 
+    private val readonlyLauncher =
+        activity.registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult(), ::onReadonlyResult)
+
     init {
         // Ruling R22: the unique work's state, while the activity is started.
         scope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 var last = BackupWork.IDLE
                 WorkManager.getInstance(app).getWorkInfosForUniqueWorkFlow(BackupTrigger.WORK_NAME).collect { infos ->
-                    val work = when {
-                        infos.any { it.state == WorkInfo.State.RUNNING } -> BackupWork.RUNNING
-                        infos.any { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED } -> BackupWork.ENQUEUED
-                        else -> BackupWork.IDLE
-                    }
+                    val work = workOf(infos)
                     ui { copy(work = work) }
                     // A run finished: show what it recorded.
                     if (last == BackupWork.RUNNING && work != BackupWork.RUNNING) refreshStatus()
+                    last = work
+                }
+            }
+        }
+        // The inbox checks (the wake's and «Проверить новые книги»), the same way.
+        scope.launch {
+            activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                val wm = WorkManager.getInstance(app)
+                var last = BackupWork.IDLE
+                combine(
+                    wm.getWorkInfosForUniqueWorkFlow(BackupTrigger.INBOX_WORK_NAME),
+                    wm.getWorkInfosForUniqueWorkFlow(BackupTrigger.INBOX_MANUAL_WORK_NAME),
+                ) { wake, manual -> workOf(wake + manual) }.collect { work ->
+                    ui { copy(inboxWork = work) }
+                    // A check ended (even one too quick to be seen running): show what it recorded.
+                    if (last != BackupWork.IDLE && work == BackupWork.IDLE) refreshStatus()
                     last = work
                 }
             }
@@ -141,7 +192,7 @@ class BackupController(
     /** The backup screen opens: no old message or dialog; fetch the offer's date if it is pending. */
     fun onShow() {
         closeRestore()
-        if (!state.backupUi.busy) ui { copy(message = null) }
+        if (!state.backupUi.busy) ui { copy(message = null, inboxMessage = null) }
         scope.launch {
             val s = loadStatus()
             if (s.restoreOfferPending && state.backupUi.offerDate == null) fetchOfferDate()
@@ -214,7 +265,7 @@ class BackupController(
                 val wasSignedIn = store.load().signedIn
                 var date: LocalDate? = null
                 if (!wasSignedIn) {
-                    val runner = deps.runner { token }
+                    val runner = deps.runner({ token }, null)
                     val has = runner.hasRemoteBackups()
                     if (has) date = runner.latestSnapshotDate()
                     writeFlag { has }
@@ -235,6 +286,68 @@ class BackupController(
             onFailure = { e -> ui { copy(busy = false, message = backupErrorText(e, text(R.string.backup_check_failed))) } },
         )
         refreshStatus()
+    }
+
+    // ---- «Забирать новые книги с Диска» ---------------------------------------------------------
+
+    /**
+     * On (also the re-enable after a sign-in failure, while the stored flag may still be on): the
+     * readonly consent UI if Google needs one; if not, the grant is checked (no UI can also mean Play
+     * services failing). Off: stored only.
+     */
+    override fun setInboxEnabled(on: Boolean) {
+        if (state.backupUi.busy) return
+        ui { copy(inboxMessage = null) }
+        if (!on) {
+            scope.launch {
+                withContext(io) { store.inboxEnabled(false) }
+                loadStatus()
+            }
+            return
+        }
+        ui { copy(busy = true) }
+        scope.launch {
+            val intent = withContext(io) { deps.readonly.intent(activity) }
+            if (intent != null) {
+                signInPending = true
+                try {
+                    readonlyLauncher.launch(IntentSenderRequest.Builder(intent).build())
+                } catch (e: Exception) {
+                    Log.w(TAG, "readonly consent UI failed to start", e)
+                    signInPending = false
+                    afterReadonly(granted = false)
+                }
+                return@launch
+            }
+            afterReadonly(granted = withContext(io) { deps.readonly.granted() })
+        }
+    }
+
+    /** The consent UI's answer. A token alone is not enough: granular consent may leave drive.readonly out. */
+    internal fun onReadonlyResult(result: ActivityResult) {
+        signInPending = false
+        val data = result.data
+        val token = if (result.resultCode == Activity.RESULT_OK && data != null) deps.readonly.tokenFromResult(data) else null
+        scope.launch { afterReadonly(granted = token != null && withContext(io) { deps.readonly.granted() }) }
+    }
+
+    /** Granted: stored on (which clears the re-enable flag) and checked at once. Not: stays as it was, with the error. */
+    private suspend fun afterReadonly(granted: Boolean) {
+        if (!granted) {
+            ui { copy(busy = false, inboxMessage = text(R.string.inbox_no_access)) }
+            return
+        }
+        withContext(io) { store.inboxEnabled(true) }
+        BackupTrigger.checkInboxNow(app)
+        ui { copy(busy = false, inboxMessage = null) }
+        loadStatus()
+    }
+
+    /** «Проверить новые книги»: only while the button is enabled ([inboxCheckEnabled]). */
+    override fun checkInboxNow() {
+        val status = state.backup ?: return
+        if (!inboxCheckEnabled(status, state.backupUi)) return
+        BackupTrigger.checkInboxNow(app)
     }
 
     // ---- backup now / the offer ----------------------------------------------------------------
@@ -345,6 +458,10 @@ class BackupController(
      * Ruling R26: on IO; the snapshot is deleted afterwards whatever happened. The hold stays for
      * the whole apply; a full restore clears the flag, a partial one keeps it so the offer stays up
      * (R30), an outright failure puts the previous value back (R28).
+     *
+     * With the inbox on (and needing no re-enable) the runner gets the readonly token, so a book the
+     * inbox brought (on Drive only as the owner's own file) comes back too. Without it such books
+     * fail with [BookNeedsInboxException], and the partial text says to turn the inbox on.
      */
     override fun confirmRestore() {
         val plan = state.restore?.plan ?: return
@@ -359,13 +476,17 @@ class BackupController(
         scope.launch {
             // The flag afterwards: released by a full restore, kept by a partial one, as before otherwise.
             val (message, hold) = withContext(io) {
+                val status = store.load()
+                val grant = status.inboxEnabled && !status.inboxNeedsReauth
                 try {
-                    val runner = runner()
+                    val runner = runner(readonly = if (grant) deps.readonly::token else null)
                     applyRestore(zip, plan) { book, to -> runner.downloadBook(book, to) }
                     text(R.string.restore_done) to false
                 } catch (e: RestoreFailedException) {
                     Log.w(TAG, "restore partly failed", e)
-                    app.getString(R.string.restore_partial, e.failed) to true
+                    val partial = app.getString(R.string.restore_partial, e.failed)
+                    val hint = !grant && e.causes.any { it is BookNeedsInboxException }
+                    (if (hint) "$partial — $RESTORE_HINT_INBOX" else partial) to true
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -449,7 +570,13 @@ class BackupController(
 
     // ---- helpers -------------------------------------------------------------------------------
 
-    private fun runner(): BackupRunner = deps.runner(auth::silentToken)
+    private fun runner(readonly: (() -> String?)? = null): BackupRunner = deps.runner(auth::silentToken, readonly)
+
+    private fun workOf(infos: List<WorkInfo>): BackupWork = when {
+        infos.any { it.state == WorkInfo.State.RUNNING } -> BackupWork.RUNNING
+        infos.any { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED } -> BackupWork.ENQUEUED
+        else -> BackupWork.IDLE
+    }
 
     private inline fun ui(change: BackupUi.() -> BackupUi) {
         state.backupUi = state.backupUi.change()

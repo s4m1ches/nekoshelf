@@ -195,6 +195,8 @@ fun HomeScreen(state: HomeState, toggles: Toggles, actions: HomeActions, backup:
                         onDismiss = actions::closeOverlay,
                         ui = state.backupUi,
                         onDeclineOffer = backup::declineRestoreOffer,
+                        onInboxToggle = backup::setInboxEnabled,
+                        onCheckInbox = backup::checkInboxNow,
                     )
                 }
                 state.restore?.let { r ->

@@ -5,6 +5,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -40,6 +42,8 @@ class BackupScreenTest {
     private val declines = mutableIntStateOf(0)
     private val confirms = mutableIntStateOf(0)
     private val mangaSaves = mutableIntStateOf(0)
+    private val inboxToggles = ArrayList<Boolean>()
+    private val inboxChecks = mutableIntStateOf(0)
 
     private val signedIn = BackupStatus.EMPTY.copy(
         signedIn = true,
@@ -63,6 +67,8 @@ class BackupScreenTest {
                 onDismiss = {},
                 ui = ui,
                 onDeclineOffer = { declines.intValue++ },
+                onInboxToggle = { inboxToggles += it },
+                onCheckInbox = { inboxChecks.intValue++ },
                 nowMs = now,
                 zone = zone,
             )
@@ -277,6 +283,95 @@ class BackupScreenTest {
         val mark = rule.onNodeWithText("☁︎!").assertExists().fetchSemanticsNode().boundsInRoot
         val battery = rule.onNodeWithText("80%").fetchSemanticsNode().boundsInRoot
         assertTrue("mark $mark must be left of battery $battery", mark.right <= battery.left)
+    }
+
+    // ---- «Забирать новые книги с Диска» ----------------------------------------------------------
+
+    private val inboxOn = signedIn.copy(inboxEnabled = true)
+
+    @Test fun inboxOffShowsAnUncheckedBoxAndNoStatusLine() {
+        screen(signedIn)
+        rule.onNodeWithText("Забирать новые книги с Диска").assertIsOff().performClick()
+        rule.onNodeWithText("Новые книги с Диска", substring = true).assertDoesNotExist()
+        rule.onNodeWithText("нет доступа к Диску — включите заново").assertDoesNotExist()
+        rule.onNodeWithText("Проверить новые книги").assertIsNotEnabled().performClick()
+        rule.runOnIdle {
+            assertEquals(listOf(true), inboxToggles)
+            assertEquals(0, inboxChecks.intValue)
+        }
+    }
+
+    @Test fun inboxOnBeforeTheFirstCheck() {
+        screen(inboxOn)
+        rule.onNodeWithText("Забирать новые книги с Диска").assertIsOn()
+        rule.onNodeWithText("Новые книги с Диска: ещё не проверялось").assertExists()
+        rule.onNodeWithText("Проверить новые книги").assertIsEnabled().performClick()
+        rule.runOnIdle { assertEquals(1, inboxChecks.intValue) }
+    }
+
+    @Test fun uncheckingTurnsTheInboxOff() {
+        screen(inboxOn)
+        rule.onNodeWithText("Забирать новые книги с Диска").performClick()
+        rule.runOnIdle { assertEquals(listOf(false), inboxToggles) }
+    }
+
+    @Test fun inboxStatusLineShowsTheLastCheckAndTheCount() {
+        val status = mutableStateOf(inboxOn.copy(inboxLastCheckAt = at(today, 8, 12), inboxReceived = 2))
+        rule.setContent {
+            BackupScreen(status = status.value, onSignIn = {}, onBackupNow = {}, onRestore = {}, onDismiss = {}, nowMs = now, zone = zone)
+        }
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 08:12, получено 2").assertExists()
+        status.value = inboxOn.copy(inboxLastCheckAt = at(today.minusDays(1), 23, 0), inboxReceived = 0)
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка вчера 23:00, получено 0").assertExists()
+        status.value = inboxOn.copy(inboxLastCheckAt = at(LocalDate.of(2026, 10, 1), 7, 5), inboxReceived = 1)
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка 1 октября 07:05, получено 1").assertExists()
+    }
+
+    @Test fun inboxErrorReplacesTheCount() {
+        screen(inboxOn.copy(inboxLastCheckAt = at(today, 8, 12), inboxReceived = 3, inboxError = "мало места"))
+        rule.onNodeWithText("Новые книги с Диска: последняя проверка сегодня 08:12, мало места").assertExists()
+    }
+
+    @Test fun needsReauthShowsTheErrorAndATapTurnsItOnAgain() {
+        screen(inboxOn.copy(inboxNeedsReauth = true, inboxLastCheckAt = at(today, 8, 12), inboxError = "нет доступа к Диску — включите заново"))
+        rule.onNodeWithText("нет доступа к Диску — включите заново").assertExists()
+        rule.onNodeWithText("Забирать новые книги с Диска").assertIsOff().performClick()
+        rule.onNodeWithText("Проверить новые книги").assertIsNotEnabled().performClick()
+        rule.runOnIdle {
+            assertEquals(listOf(true), inboxToggles)
+            assertEquals(0, inboxChecks.intValue)
+        }
+    }
+
+    @Test fun aFailedTurnOnShowsTheErrorUnderTheBox() {
+        screen(signedIn, BackupUi(inboxMessage = "нет доступа к Диску — включите заново"))
+        rule.onNodeWithText("нет доступа к Диску — включите заново").assertExists()
+        rule.onNodeWithText("Забирать новые книги с Диска").assertIsOff()
+    }
+
+    @Test fun inboxWorkQueuedOrRunningDisablesTheCheckButton() {
+        val work = mutableStateOf(BackupWork.ENQUEUED)
+        rule.setContent {
+            BackupScreen(
+                status = inboxOn, onSignIn = {}, onBackupNow = { backups.intValue++ }, onRestore = {}, onDismiss = {},
+                ui = BackupUi(inboxWork = work.value), onCheckInbox = { inboxChecks.intValue++ }, nowMs = now, zone = zone,
+            )
+        }
+        for (w in listOf(BackupWork.ENQUEUED, BackupWork.RUNNING)) {
+            work.value = w
+            rule.onNodeWithText("Проверить новые книги").assertIsNotEnabled().performClick()
+            // The backup's own button does not wait for the inbox.
+            rule.onNodeWithText("Сделать сейчас").assertIsEnabled()
+        }
+        work.value = BackupWork.IDLE
+        rule.onNodeWithText("Проверить новые книги").assertIsEnabled().performClick()
+        rule.runOnIdle { assertEquals(1, inboxChecks.intValue) }
+    }
+
+    @Test fun busyDisablesTheCheckbox() {
+        screen(signedIn, BackupUi(busy = true))
+        rule.onNodeWithText("Забирать новые книги с Диска").assertIsNotEnabled().performClick()
+        rule.runOnIdle { assertTrue(inboxToggles.isEmpty()) }
     }
 
     @Test fun backupTimesAreTodayYesterdayOrDate() {
