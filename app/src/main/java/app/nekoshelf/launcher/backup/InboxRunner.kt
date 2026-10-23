@@ -19,6 +19,9 @@ data class InboxResult(val received: Int, val skippedExisting: Int, val error: S
 const val INBOX_ERROR_NO_ACCESS = "нет доступа к Диску — включите заново"
 const val INBOX_ERROR_LOW_SPACE = "мало места"
 private const val INBOX_ERROR_OTHER = "не удалось получить книгу с Диска"
+const val INBOX_ERROR_NO_ROOT = "на Диске нет папки Nekoshelf"
+const val INBOX_ERROR_MANY_ROOTS = "на Диске несколько папок Nekoshelf"
+const val INBOX_ERROR_MANY_BOOKS = "в папке Nekoshelf несколько папок books"
 
 /** App-created file in the `Nekoshelf` root: `{"ids":[…],"updated":<ms>}`, the seen set that survives a reader wipe. */
 internal const val INBOX_SEEN_FILE = "inbox-seen.json"
@@ -27,12 +30,22 @@ private const val KIND_INBOX_SEEN = "inbox-seen"
 /** A download is skipped (and retried later) when it would leave less free space than this. */
 internal const val INBOX_MIN_FREE_BYTES = 200L * 1024 * 1024
 
+/** Download temp files: `.inbox-<random>.part` (DriveRest adds its own `.part` while writing). */
+private const val PART_PREFIX = ".inbox-"
+private const val PART_SUFFIX = ".part"
+private const val STALE_PART_MS = 24L * 60 * 60 * 1000
+
+/** The backup's snapshot folder and file kind (see [BackupRunner]): proof that a `Nekoshelf` folder is the backup's. */
+private const val KOREADER_FOLDER = "koreader"
+private const val KIND_KOREADER = "koreader"
+
 private const val GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
 private const val FOLDER_MIME = "application/vnd.google-apps.folder"
 
 /**
  * The files of a `Nekoshelf/books` [tree] the inbox should download: not Google-native (Docs,
- * shortcuts, folders — any `application/vnd.google-apps.*`), not hidden (name starting with `.`),
+ * shortcuts, folders — any `application/vnd.google-apps.*`), not hidden (the name or any folder
+ * on the way starting with `.`),
  * not the backup's own mirror copy (`appProperties.kind=book`), and not already [seen] (by Drive
  * file id — two siblings may share a name). Trashed files never reach here ([Drive.listTree]).
  */
@@ -41,6 +54,7 @@ fun inboxCandidates(tree: List<TreeFile>, seen: Set<String>): List<TreeFile> =
         val f = t.file
         !f.mimeType.startsWith(GOOGLE_NATIVE_PREFIX) &&
             !f.name.startsWith(".") &&
+            t.relativePath.split('/').none { it.startsWith(".") } &&
             f.props[PROP_KIND] != KIND_BOOK &&
             f.id !in seen
     }.distinctBy { it.file.id }
@@ -49,9 +63,17 @@ fun inboxCandidates(tree: List<TreeFile>, seen: Set<String>): List<TreeFile> =
  * The Drive books inbox: files the owner dropped under `Nekoshelf/books` (any depth) land at the same
  * relative path under [homeDir], each once.
  *
- * - Finds `Nekoshelf/books` by name and creates nothing: no folder → nothing to do.
- * - The seen set is the local cache ([BackupStore.inboxSeen]) united with every `inbox-seen.json`
- *   in the `Nekoshelf` root; it is written back (new file, old ones deleted) when it changed.
+ * - Finds `Nekoshelf/books` by name and creates nothing. Only folders count. Several `Nekoshelf`
+ *   folders in My Drive: the one holding the backup's KOReader snapshots or an app-made
+ *   `inbox-seen.json` is used; none or more than one of those → an error. No `Nekoshelf` → nothing
+ *   to do (an error once a backup has succeeded); no `books` → nothing to do; two `books` → an error.
+ * - The seen set is the local cache ([BackupStore.inboxSeen]) united with every app-made
+ *   (`kind=inbox-seen`) `inbox-seen.json` in the `Nekoshelf` root. Reading a copy must work: any
+ *   Drive or I/O failure stops the run before anything is downloaded (a wiped reader would
+ *   otherwise pull every book back), except a copy gone since the listing (404), which is skipped.
+ *   It is written back (new file; the copies read or found corrupt are then deleted) when it changed.
+ * - Stale download temp files (`.inbox-*.part*`, older than a day) are removed from the folders
+ *   this run writes to.
  * - A download goes to a temp file beside the target and is moved into place without ever
  *   replacing a file; an existing path is skipped and marked seen. The file gets Drive's
  *   `modifiedTime` as its mtime. A failed download is not marked seen (retried next run); network
@@ -81,7 +103,7 @@ class InboxRunner(
     private fun runLocked(): InboxResult {
         val start = store.load()
         val now = clock()
-        val pass = Pass()
+        val pass = Pass(hadBackup = start.lastSuccessAt != null)
         val fatal = try {
             pass.check()
             null
@@ -97,7 +119,7 @@ class InboxRunner(
         return InboxResult(pass.received, pass.skipped, error)
     }
 
-    private inner class Pass {
+    private inner class Pass(private val hadBackup: Boolean) {
         var received = 0
         var skipped = 0
         var lowSpace = false
@@ -105,21 +127,66 @@ class InboxRunner(
         private val seen = HashSet<String>()
 
         fun check() {
-            val root = drive.findChild("root", DRIVE_ROOT)?.takeIf { it.isFolder() } ?: return
-            val books = drive.findChild(root.id, DRIVE_BOOKS)?.takeIf { it.isFolder() } ?: return
+            val root = backupRoot() ?: return
+            val books = drive.findChildren(root.id, DRIVE_BOOKS).filter { it.isFolder() }
+            if (books.size > 1) throw InboxFailure(INBOX_ERROR_MANY_BOOKS)
+            val booksId = books.singleOrNull()?.id ?: return
 
-            val seenFiles = drive.list(root.id).filter { it.name == INBOX_SEEN_FILE }
             val onDrive = HashSet<String>()
-            seenFiles.forEach { onDrive += readSeen(it) }
+            val replaceable = ArrayList<RemoteFile>() // read fine or corrupt: superseded by the next write
+            var corrupt = false
+            for (f in seenCopies(root.id)) {
+                when (val r = readSeen(f)) {
+                    is SeenCopy.Ids -> { onDrive += r.ids; replaceable += f }
+                    SeenCopy.Corrupt -> { corrupt = true; replaceable += f }
+                    SeenCopy.Gone -> Unit // deleted since the listing: not ours to delete again
+                }
+            }
             val local = store.inboxSeen()
             seen += local
             seen += onDrive
             if (seen != local) store.saveInboxSeen(seen)
 
             val home = homeDir()
-            for (c in inboxCandidates(drive.listTree(books.id), seen)) receive(c, home)
+            val candidates = inboxCandidates(drive.listTree(booksId), seen)
+            sweepStaleParts(candidates.mapNotNull { resolveInside(home, it.relativePath)?.parentFile }.toSet())
+            for (c in candidates) receive(c, home)
 
-            if (seen != onDrive) writeSeen(root.id, seenFiles)
+            if (seen != onDrive || corrupt || replaceable.size > 1) writeSeen(root.id, replaceable)
+        }
+
+        /**
+         * The backup's `Nekoshelf` folder in My Drive. With the readonly grant the owner's own
+         * folders of that name are visible too: a lone folder is taken as is; among several, the one
+         * holding the backup's KOReader snapshots or an app-made seen file.
+         */
+        private fun backupRoot(): RemoteFile? {
+            val folders = drive.findChildren("root", DRIVE_ROOT).filter { it.isFolder() }
+            if (folders.isEmpty()) {
+                if (hadBackup) throw InboxFailure(INBOX_ERROR_NO_ROOT)
+                return null
+            }
+            if (folders.size == 1) return folders[0]
+            return folders.filter { isBackupRoot(it.id) }.singleOrNull() ?: throw InboxFailure(INBOX_ERROR_MANY_ROOTS)
+        }
+
+        private fun isBackupRoot(id: String): Boolean =
+            seenCopies(id).isNotEmpty() ||
+                drive.findChildren(id, KOREADER_FOLDER).filter { it.isFolder() }
+                    .any { k -> drive.list(k.id).any { it.props[PROP_KIND] == KIND_KOREADER } }
+
+        /** App-made seen files only: a file the owner happened to name so is neither trusted nor deleted. */
+        private fun seenCopies(rootId: String): List<RemoteFile> =
+            drive.findChildren(rootId, INBOX_SEEN_FILE).filter { !it.isFolder() && it.props[PROP_KIND] == KIND_INBOX_SEEN }
+
+        /** Leftovers of runs killed mid-download; today's are left alone. */
+        private fun sweepStaleParts(dirs: Set<File>) {
+            val cutoff = System.currentTimeMillis() - STALE_PART_MS
+            for (dir in dirs) {
+                dir.listFiles()?.forEach { f ->
+                    if (f.isFile && f.name.startsWith(PART_PREFIX) && PART_SUFFIX in f.name && f.lastModified() < cutoff) f.delete()
+                }
+            }
         }
 
         private fun receive(c: TreeFile, home: File) {
@@ -144,7 +211,7 @@ class InboxRunner(
             var done = false
             try {
                 dir.mkdirs()
-                part = File.createTempFile(".inbox-", ".part", dir)
+                part = File.createTempFile(PART_PREFIX, PART_SUFFIX, dir)
                 drive.download(c.file.id, part)
                 if (c.file.modifiedTime > 0) part.setLastModified(c.file.modifiedTime)
                 try {
@@ -172,16 +239,22 @@ class InboxRunner(
             if (seen.add(id)) store.saveInboxSeen(seen)
         }
 
-        private fun readSeen(f: RemoteFile): Set<String> {
+        /** Any failure other than corrupt content or a 404 propagates: the run must stop. */
+        private fun readSeen(f: RemoteFile): SeenCopy {
             val tmp = File.createTempFile("inbox-seen", ".json")
             try {
-                drive.download(f.id, tmp)
-                val ids = JSONObject(tmp.readText()).optJSONArray("ids") ?: return emptySet()
-                return (0 until ids.length()).mapNotNull { ids.optString(it).ifEmpty { null } }.toSet()
-            } catch (e: Exception) {
-                if (isNetworkClass(e) || e is DriveAuthException) throw e
-                if (e is JSONException || e is DriveException) return emptySet() // unreadable: replaced on write
-                throw e
+                try {
+                    drive.download(f.id, tmp)
+                } catch (e: DriveException) {
+                    if (e.code == 404) return SeenCopy.Gone
+                    throw e
+                }
+                return try {
+                    val ids = JSONObject(tmp.readText()).optJSONArray("ids") ?: return SeenCopy.Corrupt
+                    SeenCopy.Ids((0 until ids.length()).mapNotNull { ids.optString(it).ifEmpty { null } }.toSet())
+                } catch (e: JSONException) {
+                    SeenCopy.Corrupt
+                }
             } finally {
                 tmp.delete()
             }
@@ -204,14 +277,28 @@ class InboxRunner(
 
     private fun RemoteFile.isFolder() = mimeType == FOLDER_MIME
 
+    private sealed interface SeenCopy {
+        data class Ids(val ids: Set<String>) : SeenCopy
+        data object Corrupt : SeenCopy
+        data object Gone : SeenCopy
+    }
+
     private companion object {
         /** Process-wide: the wake work, a backup run and the button must not download the same file twice. */
         val RUNNING = AtomicBoolean(false)
     }
 }
 
-/** Lost readonly access (token rejected, or 403 from listing) asks the owner to turn the checkbox on again. */
+/** A check that cannot go on, with its own status text. */
+private class InboxFailure(val text: String) : Exception(text)
+
+/**
+ * Lost readonly access (token rejected, or a 403 from a listing) asks the owner to turn the
+ * checkbox on again. DriveRest drops the error body, so a rate-limit 403 cannot be told apart and
+ * reads the same.
+ */
 internal fun inboxErrorText(e: Throwable): String = when {
+    e is InboxFailure -> e.text
     e is DriveAuthException -> INBOX_ERROR_NO_ACCESS
     e is DriveException && e.code == 403 -> INBOX_ERROR_NO_ACCESS
     else -> backupErrorText(e, INBOX_ERROR_OTHER)

@@ -5,6 +5,7 @@ import app.nekoshelf.launcher.backup.drive.DriveAuthException
 import app.nekoshelf.launcher.backup.drive.DriveException
 import app.nekoshelf.launcher.backup.drive.RemoteFile
 import app.nekoshelf.launcher.backup.drive.TreeFile
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -162,7 +163,7 @@ class InboxRunnerTest {
         val b = userFile(books, "b.epub")
         val c = userFile(books, "c.epub", "C")
         val json = File(tmp.root, "seen.json").apply { writeText("""{"ids":["$a"],"updated":1}""") }
-        drive.upload(root, "inbox-seen.json", json, emptyMap(), null)
+        drive.upload(root, "inbox-seen.json", json, mapOf("kind" to "inbox-seen"), null)
         store.saveInboxSeen(setOf(b))
 
         val r = run()
@@ -344,6 +345,177 @@ class InboxRunnerTest {
         assertTrue(s.signedIn)
         assertEquals("owner@example.com", s.account)
         assertEquals("нет сети", s.lastError) // the backup's own status is untouched
+    }
+
+    // ---- fix round 1 ----------------------------------------------------------------------------
+
+    private fun putSeenFile(vararg ids: String): String {
+        val f = File(tmp.root, "seen-${System.nanoTime()}.json")
+        f.writeText(JSONObject().put("ids", JSONArray(ids.toList())).put("updated", 1).toString())
+        return drive.upload(root, "inbox-seen.json", f, mapOf("kind" to "inbox-seen"), null).id
+    }
+
+    /** Puts [first] ahead of every existing node, so Drive "answers" with it first. */
+    private fun putFirst(first: () -> Unit) {
+        val keep = LinkedHashMap(drive.nodes)
+        drive.nodes.clear()
+        first()
+        keep.forEach { (k, v) -> drive.nodes.putIfAbsent(k, v) }
+    }
+
+    @Test fun seenFileReadFailureIsFatalAndKeepsTheRecord() {
+        val a = userFile(books, "a.epub")
+        val seenId = putSeenFile(a)
+        store.saveInboxSeen(emptySet()) // a wiped reader
+        drive.failDownload[seenId] = DriveException(500, "backend error")
+        drive.uploads.clear()
+
+        val r = run()
+
+        assertEquals(InboxResult(0, 0, "ошибка Google Диска (код 500)"), r)
+        assertFalse(local("a.epub").exists())
+        assertTrue(a !in drive.downloads)
+        assertTrue(seenId in drive.nodes) // the only record of what was seen is kept
+        assertTrue(drive.uploads.isEmpty())
+        assertTrue(drive.deletes.isEmpty())
+    }
+
+    @Test fun seenFileThatVanishedIsSkippedNotDeleted() {
+        val a = userFile(books, "a.epub")
+        val b = userFile(books, "b.epub", "B")
+        val gone = putSeenFile(b)
+        val kept = putSeenFile(a)
+        drive.failDownload[gone] = DriveException(404, "not found")
+
+        val r = run()
+
+        assertEquals(InboxResult(1, 0, null), r) // b: its only record vanished mid-run
+        assertTrue(a !in drive.downloads)
+        assertTrue(gone !in drive.deletes)
+        assertTrue(kept in drive.deletes)
+    }
+
+    @Test fun corruptSeenFileIsReplaced() {
+        val badJson = File(tmp.root, "bad.json").apply { writeText("{not json") }
+        val bad = drive.upload(root, "inbox-seen.json", badJson, mapOf("kind" to "inbox-seen"), null).id
+        userFile(books, "a.epub")
+
+        val r = run()
+
+        assertEquals(InboxResult(1, 0, null), r)
+        assertTrue(bad in drive.deletes)
+        assertEquals(1, drive.nodes.values.count { it.name == "inbox-seen.json" })
+    }
+
+    @Test fun seenFilesNotMadeByTheAppAreIgnored() {
+        val a = userFile(books, "a.epub")
+        val foreign = drive.put(root, "inbox-seen.json", """{"ids":["$a"]}""".toByteArray())
+
+        run()
+
+        assertTrue(a in drive.downloads) // its content is not trusted
+        assertTrue(foreign in drive.nodes)
+        assertTrue(foreign !in drive.deletes)
+    }
+
+    @Test fun sameNamedFileBesideTheRootIsIgnored() {
+        putFirst {
+            drive.nodes["u-file"] = FakeDrive.Node("u-file", null, "Nekoshelf", false, "x".toByteArray(), emptyMap(), "text/plain")
+        }
+        val booksFile = drive.put(root, "books", "x".toByteArray(), mimeType = "text/plain")
+        val booksNode = drive.nodes[booksFile]!!
+        putFirst { drive.nodes[booksFile] = booksNode }
+        userFile(books, "a.epub", "A")
+
+        val r = run()
+
+        assertEquals(InboxResult(1, 0, null), r)
+        assertEquals("A", local("a.epub").readText())
+    }
+
+    @Test fun secondNekoshelfFolderPrefersTheBackupOne() {
+        lateinit var myBooks: String
+        putFirst {
+            val mine = drive.putFolder(null, "Nekoshelf") // the owner's own, first in Drive's answer
+            myBooks = drive.putFolder(mine, "books")
+        }
+        userFile(myBooks, "wrong.epub")
+        drive.putFolder(drive.nodes[myBooks]!!.parent, "koreader") // a same-named folder alone is no proof
+        drive.put(drive.folder("koreader", root), "koreader-2026-10-23.zip", "z".toByteArray(), mapOf("kind" to "koreader"))
+        userFile(books, "right.epub", "R")
+
+        val r = run()
+
+        assertEquals(InboxResult(1, 0, null), r)
+        assertEquals("R", local("right.epub").readText())
+        assertFalse(local("wrong.epub").exists())
+        assertEquals(root, drive.nodes.values.single { it.name == "inbox-seen.json" }.parent)
+    }
+
+    @Test fun ambiguousNekoshelfFoldersReportAnError() {
+        val other = drive.putFolder(null, "Nekoshelf")
+        drive.putFolder(other, "books")
+        userFile(books, "a.epub")
+
+        val r = run()
+
+        assertEquals(InboxResult(0, 0, "на Диске несколько папок Nekoshelf"), r)
+        assertEquals("на Диске несколько папок Nekoshelf", store.load().inboxError)
+        assertFalse(local("a.epub").exists())
+        assertTrue(drive.uploads.isEmpty())
+    }
+
+    @Test fun missingRootAfterABackupReportsAnError() {
+        drive.nodes.clear()
+        store.update { it.copy(lastSuccessAt = now - 1000) }
+
+        val r = run()
+
+        assertEquals(InboxResult(0, 0, "на Диске нет папки Nekoshelf"), r)
+        assertTrue(drive.nodes.isEmpty())
+    }
+
+    @Test fun twoBooksFoldersReportAnError() {
+        val second = drive.putFolder(root, "books")
+        userFile(second, "a.epub")
+
+        assertEquals("в папке Nekoshelf несколько папок books", run().error)
+        assertFalse(local("a.epub").exists())
+    }
+
+    @Test fun filesInHiddenFoldersAreSkipped() {
+        val hidden = drive.folder(".sync", books)
+        userFile(hidden, "a.epub")
+        val inner = drive.folder("Серия", hidden)
+        userFile(inner, "b.epub")
+        assertEquals(emptyList<TreeFile>(), inboxCandidates(listOf(tf("1", "ok/.cache/x.pdf")), emptySet()))
+
+        val r = run()
+
+        assertEquals(InboxResult(0, 0, null), r)
+        assertEquals(emptyList<String>(), home.list()!!.toList())
+    }
+
+    @Test fun staleTempFilesAreSwept() {
+        val old = System.currentTimeMillis() - 2L * 24 * 60 * 60 * 1000
+        val sub = drive.folder("sub", books)
+        userFile(sub, "a.epub")
+        userFile(books, "b.epub")
+        local("sub").mkdirs()
+        val stale = local("sub/.inbox-123.part").apply { writeText("x"); setLastModified(old) }
+        val staleTwice = local("sub/.inbox-456.part.part").apply { writeText("x"); setLastModified(old) }
+        val staleTop = local(".inbox-1.part").apply { writeText("x"); setLastModified(old) }
+        val fresh = local("sub/.inbox-789.part").apply { writeText("x") }
+        val notOurs = local("sub/.keep.part").apply { writeText("x"); setLastModified(old) }
+
+        run()
+
+        assertFalse(stale.exists())
+        assertFalse(staleTwice.exists())
+        assertFalse(staleTop.exists())
+        assertTrue(fresh.exists())
+        assertTrue(notOurs.exists())
+        assertTrue(local("sub/a.epub").exists())
     }
 
     @Test fun localSeenSetPersists() {

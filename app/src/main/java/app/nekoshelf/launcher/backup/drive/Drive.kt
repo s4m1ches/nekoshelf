@@ -49,6 +49,9 @@ interface Drive {
     /** A non-trashed child of [parent] named [name], whoever created it; null when absent. */
     fun findChild(parent: String, name: String): RemoteFile?
 
+    /** Every non-trashed child of [parent] named [name], whoever created it, with its mimeType ([parent] may be `root`). */
+    fun findChildren(parent: String, name: String): List<RemoteFile>
+
     /**
      * Uploads [file] as [name] under [parent]. Files over 5 MB use a resumable session whose URL and
      * committed offset are kept in [resume] under the key `"$parent|$name"`.

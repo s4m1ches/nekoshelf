@@ -101,6 +101,13 @@ class FakeDrive : Drive {
         return id
     }
 
+    /** A folder someone made under [parent] (null = My Drive), even beside a same-named one; returns its id. */
+    fun putFolder(parent: String?, name: String): String {
+        val id = "d${nextId++}"
+        nodes[id] = Node(id, parent, name, true, ByteArray(0), emptyMap())
+        return id
+    }
+
     /** The ResumeStore each upload got (for checking it is passed through). */
     val resumeStores = ArrayList<ResumeStore?>()
 
@@ -140,10 +147,12 @@ class FakeDrive : Drive {
         return out
     }
 
-    override fun findChild(parent: String, name: String): RemoteFile? {
+    override fun findChild(parent: String, name: String): RemoteFile? = findChildren(parent, name).firstOrNull()
+
+    override fun findChildren(parent: String, name: String): List<RemoteFile> {
         call()
         val p = if (parent == "root") null else parent // Drive's alias for "My Drive"
-        return nodes.values.firstOrNull { it.parent == p && it.name == name }?.remote()
+        return nodes.values.filter { it.parent == p && it.name == name }.map { it.remote() }
     }
 
     override fun upload(parent: String, name: String, file: File, props: Map<String, String>, resume: ResumeStore?): RemoteFile {

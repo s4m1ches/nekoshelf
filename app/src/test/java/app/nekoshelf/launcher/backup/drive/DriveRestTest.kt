@@ -339,4 +339,21 @@ class DriveRestTest {
         server.enqueue(json("""{"files":[]}"""))
         assertNull(drive.findChild("P", "x"))
     }
+
+    @Test fun findChildrenReturnsEverySameNamedChildWithItsMimeType() {
+        server.enqueue(json("""{"files":[
+            {"id":"A","name":"Nekoshelf","mimeType":"application/vnd.google-apps.folder"},
+            {"id":"B","name":"Nekoshelf","mimeType":"text/plain","appProperties":{"kind":"x"}}],"nextPageToken":"T2"}"""))
+        server.enqueue(json("""{"files":[{"id":"C","name":"Nekoshelf","mimeType":"application/vnd.google-apps.folder"}]}"""))
+
+        val r = drive.findChildren("root", "Nekoshelf")
+
+        assertEquals(listOf("A", "B", "C"), r.map { it.id })
+        assertEquals("application/vnd.google-apps.folder", r[0].mimeType)
+        assertEquals(mapOf("kind" to "x"), r[1].props)
+        val q = decodedQuery(server.takeRequest().path!!)
+        assertTrue(q, q.contains("name = 'Nekoshelf' and 'root' in parents and trashed = false"))
+        assertTrue(q, q.contains("mimeType"))
+        assertTrue(decodedQuery(server.takeRequest().path!!).contains("pageToken=T2"))
+    }
 }
