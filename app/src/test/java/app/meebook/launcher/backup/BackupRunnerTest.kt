@@ -45,6 +45,12 @@ class FakeDrive : Drive {
     /** Thrown from every call while set. */
     var failEverything: Exception? = null
 
+    /** Thrown by the upload of a file with this name while set. */
+    var failUploadNamed: Pair<String, Exception>? = null
+
+    /** Deletes answer 404 (and delete nothing) while set. */
+    var deletesAnswer404 = false
+
     /** The ResumeStore each upload got (for checking it is passed through). */
     val resumeStores = ArrayList<ResumeStore?>()
 
@@ -77,7 +83,13 @@ class FakeDrive : Drive {
             bookUploads++
             if (bookUploads == failBookUpload) throw bookUploadError
         }
+        failUploadNamed?.let { (n, e) -> if (n == name) throw e }
         require(nodes[parent]?.folder == true) { "no parent folder $parent" }
+        // Drive's appProperties limits: 124 UTF-8 bytes per key + value, 30 per app.
+        if (props.size > 30) throw DriveException(400, "too many properties")
+        for ((k, v) in props) {
+            if ((k + v).toByteArray(Charsets.UTF_8).size > 124) throw DriveException(400, "property too long")
+        }
         resumeStores += resume
         val id = "x${nextId++}"
         nodes[id] = Node(id, parent, name, false, file.readBytes(), props)
@@ -92,6 +104,7 @@ class FakeDrive : Drive {
 
     override fun delete(id: String) {
         call()
+        if (deletesAnswer404) throw DriveException(404, "not found")
         nodes.remove(id) ?: throw DriveException(404, "not found")
         deletes += id
     }
@@ -163,7 +176,10 @@ class BackupRunnerTest {
         assertEquals("tachibk", String(drive.files()["Meebook/manga/manga-2026-10-23.tachibk"]!!.bytes))
         assertEquals(listOf("a.epub", "sub/b.pdf", "sub/deep/c.fb2"), drive.filesIn("Meebook/books"))
         val b = drive.files()["Meebook/books/sub/b.pdf"]!!
-        assertEquals(mapOf("kind" to "book", "path" to "sub/b.pdf", "size" to "6", "mtime" to "1700000000000"), b.props)
+        assertEquals(
+            mapOf("kind" to "book", "pid" to pathId("sub/b.pdf"), "size" to "6", "mtime" to "1700000000000", "p0" to "sub/b.pdf"),
+            b.props,
+        )
         assertEquals("bbbbbb", String(b.bytes))
         // The zip carries the books manifest.
         val zip = File(tmp.newFolder(), "k.zip").also { it.writeBytes(drive.files()["Meebook/koreader/koreader-2026-10-23.zip"]!!.bytes) }
@@ -199,7 +215,7 @@ class BackupRunnerTest {
         assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk", "a.epub", "d.epub"), drive.uploads)
         // The old copy of the changed book is replaced, not kept beside it.
         assertTrue(oldA in drive.deletes)
-        val a = drive.nodes.values.filter { it.props["path"] == "a.epub" }
+        val a = drive.nodes.values.filter { bookPathOf(it.props) == "a.epub" }
         assertEquals(1, a.size)
         assertEquals("aaaa-longer", String(a[0].bytes))
         assertEquals("1700000500000", a[0].props["mtime"])
@@ -236,6 +252,7 @@ class BackupRunnerTest {
         assertEquals("нет сети", failed.lastError)
         assertNull(failed.lastSuccessAt)
         assertEquals(1, failed.booksOnDrive)
+        assertEquals(2, failed.booksPending)
         assertFalse(failed.booksCaughtUpOnce)
         assertEquals(failed, store.load())
         assertTrue(workDirClean())
@@ -303,9 +320,11 @@ class BackupRunnerTest {
 
         val s = run()
 
+        // R18: the rest worked, so the day counts as backed up; the «Манга» error is a later failure.
         assertEquals("Манга не ответила", s.lastError)
-        assertEquals(now, s.lastFailureAt)
-        assertNull(s.lastSuccessAt)
+        assertEquals(now, s.lastSuccessAt)
+        assertTrue(s.lastFailureAt!! > s.lastSuccessAt!!)
+        assertFalse(shouldRunAuto(s, day0, charging, zone))
         assertTrue(drive.filesIn("Meebook/manga").isEmpty())
         assertTrue(workDirClean())
         // A broken «Манга» does not hold the rest back.
@@ -417,6 +436,200 @@ class BackupRunnerTest {
         r.downloadBook(BookEntry("sub/b.pdf", 6, 1_700_000_000_000L), to)
         assertEquals("bbbbbb", to.readText())
         assertThrows(IOException::class.java) { r.downloadBook(BookEntry("nope.epub", 1, 1), File(tmp.root, "nope")) }
+    }
+
+    @Test fun longCyrillicPathRoundTripsThroughDrive() {
+        val rel = "Фантастика/Аркадий и Борис Стругацкие/Собрание сочинений в одиннадцати томах 📚/" +
+            "Том седьмой. Понедельник начинается в субботу. Сказка о Тройке. Улитка на склоне (1966).fb2"
+        assertTrue(rel.toByteArray(Charsets.UTF_8).size >= 300)
+        val f = book(rel, "текст")
+
+        val s = run()
+
+        val node = drive.files()["Meebook/books/$rel"]!!
+        assertEquals(rel, bookPathOf(node.props))
+        assertEquals(pathId(rel), node.props["pid"])
+        assertTrue(node.props.keys.count { Regex("""p\d+""").matches(it) } >= 3)
+        assertEquals(0, s.booksPending)
+        assertEquals(4, s.booksOnDrive)
+
+        // Indexed back to the identical path: nothing to upload the next day.
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+        assertEquals(0, run().booksPending)
+        assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk"), drive.uploads)
+
+        val to = File(tmp.root, "dl.fb2")
+        runner().downloadBook(BookEntry(rel, f.length(), f.lastModified()), to)
+        assertEquals("текст", to.readText())
+    }
+
+    @Test fun pathChunksFitDriveLimitAtCharacterBoundaries() {
+        val rel = "я".repeat(70) + "😀".repeat(40) + "a".repeat(130)
+        val props = bookAppProperties(BookEntry(rel, 1, 2))
+        for ((k, v) in props) assertTrue(k, (k + v).toByteArray(Charsets.UTF_8).size <= DRIVE_PROP_MAX_BYTES)
+        assertTrue(props.values.none { v -> v.isNotEmpty() && (v.first().isLowSurrogate() || v.last().isHighSurrogate()) })
+        assertEquals(rel, bookPathOf(props))
+        assertThrows(IOException::class.java) { bookAppProperties(BookEntry("я".repeat(2000), 1, 2)) }
+    }
+
+    @Test fun oneRejectedBookDoesNotBlockTheRest() {
+        drive.failBookUpload = 1
+        drive.bookUploadError = DriveException(400, "Google Drive request failed (HTTP 400)")
+
+        val s = run()
+
+        assertEquals(listOf("sub/b.pdf", "sub/deep/c.fb2"), drive.filesIn("Meebook/books"))
+        assertEquals(1, s.booksPending)
+        assertEquals(2, s.booksOnDrive)
+        assertEquals("ошибка Google Диска (код 400)", s.lastError)
+        assertEquals(now, s.lastFailureAt)
+        assertNull(s.lastSuccessAt)
+        assertFalse(s.booksCaughtUpOnce)
+    }
+
+    @Test fun overlappingRunReturnsAtOnceWithoutTouchingDrive() {
+        var nested: BackupStatus? = null
+        var stored: BackupStatus? = null
+        var callsBefore = -1
+        var callsAfter = -2
+        var outer = true
+        manga = {
+            if (outer) {
+                outer = false
+                callsBefore = drive.calls
+                stored = store.load()
+                val t = Thread { nested = runner().run(charging, manual = true) }
+                t.start()
+                t.join(10_000)
+                callsAfter = drive.calls
+            }
+            ByteArrayInputStream("tachibk".toByteArray())
+        }
+
+        val s = run()
+
+        assertEquals(stored, nested)
+        assertEquals(callsBefore, callsAfter)
+        assertEquals(now, s.lastSuccessAt)
+        // The lock is released afterwards.
+        manga = { ByteArrayInputStream("tachibk".toByteArray()) }
+        now += 1
+        assertEquals(now, run().lastSuccessAt)
+    }
+
+    @Test fun staleWorkFoldersAreRemovedButNotOtherRuns() {
+        val base = File(cache, "backup-work").apply { mkdirs() }
+        val old = File(base, "run-old").apply { mkdirs() }
+        File(old, "koreader-2026-10-20.zip").writeText("x")
+        old.setLastModified(System.currentTimeMillis() - 2 * 24 * 3_600_000L)
+        val other = File(base, "run-other").apply { mkdirs() }
+
+        run()
+
+        assertFalse(old.exists())
+        assertTrue(other.exists())
+        assertEquals(listOf("run-other"), base.list()!!.toList())
+    }
+
+    @Test fun deletesThatAnswer404CountAsDone() {
+        run()
+        drive.deletesAnswer404 = true
+        now += 3_600_000
+
+        val s = run()
+
+        assertEquals(now, s.lastSuccessAt)
+        assertNull(s.lastError)
+    }
+
+    @Test fun staleCopiesOfAPresentBookAreRemoved() {
+        run()
+        val current = drive.files()["Meebook/books/a.epub"]!!
+        val junk = File(tmp.root, "junk").apply { writeText("old version") }
+        val stale = drive.upload(current.parent!!, "a.epub", junk, bookAppProperties(BookEntry("a.epub", 11, 5)), null)
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+
+        run()
+
+        assertFalse(drive.nodes.containsKey(stale.id))
+        assertTrue(drive.nodes.containsKey(current.id))
+        assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk"), drive.uploads)
+    }
+
+    @Test fun retentionNeverDeletesTodaysUploadWhenClockWentBack() {
+        for (i in 1..14) {
+            now = at(day0.plusDays(i.toLong()))
+            run()
+        }
+        now = at(day0)
+
+        val s = run()
+
+        assertTrue("koreader-2026-10-23.zip" in drive.filesIn("Meebook/koreader"))
+        assertTrue("manga-2026-10-23.tachibk" in drive.filesIn("Meebook/manga"))
+        assertEquals(15, s.koreaderSnapshots)
+        assertEquals(now, s.lastSuccessAt)
+    }
+
+    @Test fun signOutDuringRunLeavesStatusAlone() {
+        manga = {
+            store.signedOut()
+            ByteArrayInputStream("tachibk".toByteArray())
+        }
+
+        val s = run()
+
+        assertEquals(BackupStatus.EMPTY, s)
+        assertEquals(BackupStatus.EMPTY, store.load())
+    }
+
+    @Test fun accountChangeDuringRunLeavesStatusAlone() {
+        manga = {
+            store.signedIn("other@example.com", now + 1)
+            ByteArrayInputStream("tachibk".toByteArray())
+        }
+
+        run()
+
+        val s = store.load()
+        assertEquals("other@example.com", s.account)
+        assertNull(s.lastSuccessAt)
+        assertEquals(0, s.booksOnDrive)
+        assertNull(s.lastAttemptDay)
+    }
+
+    @Test fun sameFileNameInDifferentFoldersAreSeparateBooks() {
+        val x = book("x/notes.txt", "one")
+        val y = book("y/notes.txt", "two!")
+
+        run()
+
+        assertEquals("one", String(drive.files()["Meebook/books/x/notes.txt"]!!.bytes))
+        assertEquals("two!", String(drive.files()["Meebook/books/y/notes.txt"]!!.bytes))
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+        assertEquals(0, run().booksPending)
+        assertEquals(listOf("koreader-2026-10-24.zip", "manga-2026-10-24.tachibk"), drive.uploads)
+        val r = runner()
+        val tx = File(tmp.root, "x.txt").also { r.downloadBook(BookEntry("x/notes.txt", x.length(), x.lastModified()), it) }
+        val ty = File(tmp.root, "y.txt").also { r.downloadBook(BookEntry("y/notes.txt", y.length(), y.lastModified()), it) }
+        assertEquals("one", tx.readText())
+        assertEquals("two!", ty.readText())
+    }
+
+    @Test fun failureAfterKoreaderUploadKeepsPreviousSuccess() {
+        val first = run().lastSuccessAt
+        now = at(day0.plusDays(1))
+        drive.failUploadNamed = "manga-2026-10-24.tachibk" to UnknownHostException("www.googleapis.com")
+
+        val s = run()
+
+        assertTrue("koreader-2026-10-24.zip" in drive.filesIn("Meebook/koreader"))
+        assertEquals(first, s.lastSuccessAt)
+        assertEquals(now, s.lastFailureAt)
+        assertEquals("нет сети", s.lastError)
     }
 
     @Test fun signInClearsFailureAndSignOutForgetsAccount() {
