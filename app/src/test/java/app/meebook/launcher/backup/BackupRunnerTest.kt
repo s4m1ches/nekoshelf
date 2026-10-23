@@ -18,7 +18,13 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import android.content.pm.ProviderInfo
+import app.meebook.launcher.backup.drive.TokenUnavailableException
+import app.meebook.launcher.data.manga.FakeMangaProvider
+import app.meebook.launcher.data.manga.MangaBridge
+import org.robolectric.Robolectric
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -26,6 +32,14 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
+
+/** A minimal «Манга» backup: gzip of [text] (the runner checks the gzip magic). */
+fun tachibk(text: String = "tachibk"): ByteArray =
+    ByteArrayOutputStream().also { o -> GZIPOutputStream(o).use { it.write(text.toByteArray()) } }.toByteArray()
+
+fun gunzipText(bytes: ByteArray): String = GZIPInputStream(bytes.inputStream()).use { String(it.readBytes()) }
 
 /** In-memory Drive: folders and files by id, every call recorded. */
 class FakeDrive : Drive {
@@ -50,6 +64,9 @@ class FakeDrive : Drive {
 
     /** Deletes answer 404 (and delete nothing) while set. */
     var deletesAnswer404 = false
+
+    /** Thrown by every delete while set. */
+    var failDelete: Exception? = null
 
     /** The ResumeStore each upload got (for checking it is passed through). */
     val resumeStores = ArrayList<ResumeStore?>()
@@ -105,6 +122,7 @@ class FakeDrive : Drive {
     override fun delete(id: String) {
         call()
         if (deletesAnswer404) throw DriveException(404, "not found")
+        failDelete?.let { throw it }
         nodes.remove(id) ?: throw DriveException(404, "not found")
         deletes += id
     }
@@ -138,7 +156,8 @@ class BackupRunnerTest {
     private lateinit var ko: File
     private lateinit var home: File
     private lateinit var cache: File
-    private var manga: () -> InputStream? = { ByteArrayInputStream("tachibk".toByteArray()) }
+    private var manga: () -> InputStream? = { ByteArrayInputStream(tachibk()) }
+    private var mangaAvailable: () -> Boolean = { true }
 
     private fun at(day: LocalDate) = day.atTime(10, 0).atZone(zone).toInstant().toEpochMilli()
 
@@ -162,9 +181,10 @@ class BackupRunnerTest {
     private fun book(rel: String, text: String, mtime: Long = 1_700_000_000_000L): File =
         File(home, rel).also { it.parentFile!!.mkdirs(); it.writeText(text); it.setLastModified(mtime) }
 
-    private fun runner() = BackupRunner(drive, store, ko, { home }, { manga() }, cache, { now }, zone)
+    private fun runner() = BackupRunner(drive, store, ko, { home }, { manga() }, { mangaAvailable() }, cache, { now }, zone)
 
-    private fun run(power: Power = charging, manual: Boolean = false) = runner().run(power, manual)
+    private fun run(power: Power = charging, manual: Boolean = false, powerNow: () -> Power = { power }) =
+        runner().run(power, manual, powerNow)
 
     private fun workDirClean() = !File(cache, "backup-work").exists() || File(cache, "backup-work").list()!!.isEmpty()
 
@@ -173,7 +193,7 @@ class BackupRunnerTest {
 
         assertEquals(listOf("koreader-2026-10-23.zip"), drive.filesIn("Meebook/koreader"))
         assertEquals(listOf("manga-2026-10-23.tachibk"), drive.filesIn("Meebook/manga"))
-        assertEquals("tachibk", String(drive.files()["Meebook/manga/manga-2026-10-23.tachibk"]!!.bytes))
+        assertEquals("tachibk", gunzipText(drive.files()["Meebook/manga/manga-2026-10-23.tachibk"]!!.bytes))
         assertEquals(listOf("a.epub", "sub/b.pdf", "sub/deep/c.fb2"), drive.filesIn("Meebook/books"))
         val b = drive.files()["Meebook/books/sub/b.pdf"]!!
         assertEquals(
@@ -188,7 +208,8 @@ class BackupRunnerTest {
         assertEquals(now, s.lastSuccessAt)
         assertNull(s.lastFailureAt)
         assertNull(s.lastError)
-        assertEquals("2026-10-23", s.lastAttemptDay)
+        assertNull(s.failedAutoDay)
+        assertEquals(0, s.failedAutoAttempts)
         assertEquals(1, s.koreaderSnapshots)
         assertEquals(1, s.mangaSnapshots)
         assertEquals(3, s.booksOnDrive)
@@ -298,7 +319,9 @@ class BackupRunnerTest {
     }
 
     @Test fun mangaUnavailableIsSkippedNotFailed() {
-        manga = { null }
+        // Not installed, or the bridge permission missing: the only "skipped" case (contract).
+        mangaAvailable = { false }
+        manga = { throw AssertionError("not asked when «Манга» is unavailable") }
 
         val s = run()
 
@@ -308,6 +331,47 @@ class BackupRunnerTest {
         assertEquals(0, s.mangaSnapshots)
         assertEquals(1, s.koreaderSnapshots)
         assertEquals(3, s.booksOnDrive)
+    }
+
+    @Test fun mangaGivingNoStreamIsAFailureNotASkip() {
+        manga = { null }
+
+        val s = run()
+
+        assertEquals("Манга не ответила", s.lastError)
+        assertEquals(now, s.lastSuccessAt) // R18: KOReader and books still count for the day
+        assertTrue(s.lastFailureAt!! > s.lastSuccessAt!!)
+        assertTrue(drive.filesIn("Meebook/manga").isEmpty())
+    }
+
+    @Test fun failingBridgeBackupIsRecordedAsFailure() {
+        // The real client against a provider whose `backup` throws FileNotFoundException.
+        FakeMangaProvider.reset()
+        val info = ProviderInfo().apply {
+            authority = MangaBridge.AUTHORITY
+            packageName = MangaBridge.PACKAGE
+            name = FakeMangaProvider::class.java.name
+            exported = true
+        }
+        Robolectric.buildContentProvider(FakeMangaProvider::class.java).create(info)
+        val bridge = MangaBridge(ApplicationProvider.getApplicationContext(), retryDelayMs = 0)
+        manga = { bridge.backup() }
+
+        val s = run()
+
+        assertEquals("Манга не ответила", s.lastError)
+        assertTrue(drive.filesIn("Meebook/manga").isEmpty())
+        FakeMangaProvider.reset()
+    }
+
+    @Test fun mangaBackupWithoutGzipMagicIsRecordedAsFailure() {
+        manga = { ByteArrayInputStream("<html>error</html>".toByteArray()) }
+
+        val s = run()
+
+        assertEquals("Манга не ответила", s.lastError)
+        assertTrue(drive.filesIn("Meebook/manga").isEmpty())
+        assertTrue(workDirClean())
     }
 
     @Test fun mangaStreamFailingAfterOpenIsRecorded() {
@@ -360,6 +424,99 @@ class BackupRunnerTest {
         drive.bookUploadError = DriveException(403, "Google Drive request failed (HTTP 403)")
 
         assertEquals("ошибка Google Диска (код 403)", run().lastError)
+    }
+
+    @Test fun tokenUnavailableIsNoNetworkNotRevokedAccess() {
+        drive.failEverything = TokenUnavailableException("Google Play services gave no token", null)
+
+        val s = run()
+
+        assertEquals("нет сети", s.lastError)
+        assertEquals(0, s.failedAutoAttempts)
+    }
+
+    @Test fun pendingRestoreOfferHoldsAutoAndManualRuns() {
+        store.update { it.copy(restoreOfferPending = true) }
+        val before = store.load()
+
+        assertEquals(before, run())
+        assertEquals(before, run(manual = true))
+
+        assertEquals(0, drive.calls)
+        assertEquals(before, store.load())
+    }
+
+    @Test fun failedAutoRunsAreCountedPerDayExceptNetworkFailures() {
+        drive.failBookUpload = 1
+        drive.bookUploadError = DriveException(403, "Google Drive request failed (HTTP 403)")
+        val first = run()
+        assertEquals("2026-10-23", first.failedAutoDay)
+        assertEquals(1, first.failedAutoAttempts)
+
+        // Manual runs are unlimited and not counted.
+        drive.failBookUpload = 4 // the 4th book upload: this run's retry of a.epub
+        now += 60_000
+        assertEquals(1, run(manual = true).failedAutoAttempts)
+
+        // Network-class failures may retry on every wake: not counted.
+        drive.failEverything = UnknownHostException("www.googleapis.com")
+        now += 60_000
+        assertEquals(1, run().failedAutoAttempts)
+        drive.failEverything = null
+
+        drive.failUploadNamed = "koreader-2026-10-23.zip" to DriveException(500, "x")
+        now += 60_000
+        run()
+        now += 60_000
+        val third = run()
+        assertEquals(3, third.failedAutoAttempts)
+        assertFalse(shouldRunAuto(third, day0, charging, zone))
+        assertTrue(shouldRunAuto(third, day0.plusDays(1), charging, zone))
+    }
+
+    @Test fun duplicateCopyDeleteErrorDoesNotStopTheOtherBooks() {
+        run()
+        val current = drive.files()["Meebook/books/a.epub"]!!
+        val junk = File(tmp.root, "junk").apply { writeText("old version") }
+        drive.upload(current.parent!!, "a.epub", junk, bookAppProperties(BookEntry("a.epub", 11, 5)), null)
+        book("z.epub", "zz")
+        drive.failDelete = DriveException(500, "Google Drive request failed (HTTP 500)")
+        drive.uploads.clear()
+        now = at(day0.plusDays(1))
+
+        val s = run()
+
+        assertTrue("z.epub" in drive.uploads)
+        assertEquals(0, s.booksPending)
+        assertEquals("ошибка Google Диска (код 500)", s.lastError)
+    }
+
+    @Test fun unpluggedDuringFirstSyncStopsTheBooksWithoutFailing() {
+        // Charging at the start; unplugged once the first book is up.
+        val s = run(power = charging) { if (drive.filesIn("Meebook/books").isNotEmpty()) battery else charging }
+
+        assertEquals(1, drive.filesIn("Meebook/books").size)
+        assertEquals(2, s.booksPending)
+        assertEquals(now, s.lastSuccessAt)
+        assertNull(s.lastError)
+        assertFalse(s.booksCaughtUpOnce)
+        // R31: back on the charger later today, the rest may go up.
+        assertTrue(shouldRunAuto(s, day0, charging, zone))
+    }
+
+    @Test fun manualRunIgnoresUnpluggingBetweenBooks() {
+        val s = run(power = battery, manual = true) { battery }
+        assertEquals(0, s.booksPending)
+        assertEquals(3, drive.filesIn("Meebook/books").size)
+    }
+
+    @Test fun errorTextFallbackOnlyReplacesTheGenericCase() {
+        val check = "не удалось проверить Google Диск"
+        assertEquals(check, backupErrorText(IllegalStateException("x"), check))
+        assertEquals("нет сети", backupErrorText(UnknownHostException("x"), check))
+        assertEquals("нет сети", backupErrorText(TokenUnavailableException("x", null), check))
+        assertEquals("Google отозвал доступ — войдите заново", backupErrorText(DriveAuthException("x"), check))
+        assertEquals("не удалось сделать бэкап", backupErrorText(IllegalStateException("x")))
     }
 
     @Test fun noNetworkIsRecorded() {
@@ -420,7 +577,7 @@ class BackupRunnerTest {
         assertFalse(r.latestMangaBackup(File(tmp.root, "none.tachibk")))
 
         run()
-        manga = { ByteArrayInputStream("newer".toByteArray()) }
+        manga = { ByteArrayInputStream(tachibk("newer")) }
         now = at(day0.plusDays(1))
         run()
 
@@ -430,7 +587,7 @@ class BackupRunnerTest {
         assertArrayEquals(drive.files()["Meebook/koreader/koreader-2026-10-24.zip"]!!.bytes, zip.readBytes())
         val mb = File(tmp.root, "latest.tachibk")
         assertTrue(r.latestMangaBackup(mb))
-        assertEquals("newer", mb.readText())
+        assertEquals("newer", gunzipText(mb.readBytes()))
 
         val to = File(tmp.root, "b.pdf")
         r.downloadBook(BookEntry("sub/b.pdf", 6, 1_700_000_000_000L), to)
@@ -451,12 +608,12 @@ class BackupRunnerTest {
 
         // The file looked up is the file downloaded, even if a newer one appears in between.
         val named = r.latestMangaBackupFile()!!
-        manga = { ByteArrayInputStream("even newer".toByteArray()) }
+        manga = { ByteArrayInputStream(tachibk("even newer")) }
         now = at(day0.plusDays(3))
         run()
         val got = File(tmp.root, "named.tachibk")
         r.download(named, got)
-        assertEquals("tachibk", got.readText())
+        assertEquals("tachibk", gunzipText(got.readBytes()))
         assertEquals("manga-2026-10-26.tachibk", r.latestMangaBackupName())
         now = at(day0.plusDays(2))
         drive.nodes.values.filter { it.name.endsWith("-2026-10-26.zip") || it.name.endsWith("-2026-10-26.tachibk") }
@@ -534,7 +691,7 @@ class BackupRunnerTest {
                 t.join(10_000)
                 callsAfter = drive.calls
             }
-            ByteArrayInputStream("tachibk".toByteArray())
+            ByteArrayInputStream(tachibk())
         }
 
         val s = run()
@@ -543,7 +700,7 @@ class BackupRunnerTest {
         assertEquals(callsBefore, callsAfter)
         assertEquals(now, s.lastSuccessAt)
         // The lock is released afterwards.
-        manga = { ByteArrayInputStream("tachibk".toByteArray()) }
+        manga = { ByteArrayInputStream(tachibk()) }
         now += 1
         assertEquals(now, run().lastSuccessAt)
     }
@@ -606,7 +763,7 @@ class BackupRunnerTest {
     @Test fun signOutDuringRunLeavesStatusAlone() {
         manga = {
             store.signedOut()
-            ByteArrayInputStream("tachibk".toByteArray())
+            ByteArrayInputStream(tachibk())
         }
 
         val s = run()
@@ -618,7 +775,7 @@ class BackupRunnerTest {
     @Test fun accountChangeDuringRunLeavesStatusAlone() {
         manga = {
             store.signedIn("other@example.com", now + 1)
-            ByteArrayInputStream("tachibk".toByteArray())
+            ByteArrayInputStream(tachibk())
         }
 
         run()
@@ -627,7 +784,7 @@ class BackupRunnerTest {
         assertEquals("other@example.com", s.account)
         assertNull(s.lastSuccessAt)
         assertEquals(0, s.booksOnDrive)
-        assertNull(s.lastAttemptDay)
+        assertEquals(0, s.failedAutoAttempts)
     }
 
     @Test fun sameFileNameInDifferentFoldersAreSeparateBooks() {
@@ -674,7 +831,7 @@ class BackupRunnerTest {
         assertEquals(now + 5, s.signedInAt)
         assertNull(s.lastFailureAt)
         assertNull(s.lastError)
-        assertEquals("2026-10-23", s.lastAttemptDay)
+        assertEquals(0, s.failedAutoAttempts) // a network failure is not counted (R32)
 
         store.put("k", "u", 1)
         store.signedOut()
@@ -686,7 +843,7 @@ class BackupRunnerTest {
     @Test fun storeRoundTripsEveryField() {
         val s = BackupStatus(
             signedIn = true, account = "a@b", lastSuccessAt = 1, lastFailureAt = 2, lastError = "нет сети",
-            lastAttemptDay = "2026-10-23", restoreOfferPending = true, koreaderSnapshots = 3, mangaSnapshots = 4,
+            failedAutoDay = "2026-10-23", failedAutoAttempts = 2, restoreOfferPending = true, koreaderSnapshots = 3, mangaSnapshots = 4,
             booksOnDrive = 5, booksLocal = 6, booksPending = 7, booksCaughtUpOnce = true, signedInAt = 8,
         )
         store.save(s)

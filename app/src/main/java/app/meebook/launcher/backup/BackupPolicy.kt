@@ -12,11 +12,29 @@ private val SNAPSHOT_DATE = Regex("""^(?:koreader-(\d{4}-\d{2}-\d{2})\.zip|manga
 
 private fun Power.enough() = charging || percent > BATTERY_OK_ABOVE
 
+/** Ruling R32: after this many failed automatic runs on a day, automatic runs wait for the next day. */
+internal const val MAX_FAILED_AUTO_PER_DAY = 3
+
+/**
+ * Whether a wake should queue an automatic run: signed in, no restore offer/restore holding
+ * backups, fewer than [MAX_FAILED_AUTO_PER_DAY] failed automatic runs today, and either no
+ * success today and battery > 70 % or charging — or (R31) books still waiting for the first full
+ * sync while charging, even after today's success.
+ */
 fun shouldRunAuto(status: BackupStatus, today: LocalDate, power: Power, zone: ZoneId): Boolean {
     if (!status.signedIn || status.restoreOfferPending) return false
+    if (status.failedAutoDay == today.toString() && status.failedAutoAttempts >= MAX_FAILED_AUTO_PER_DAY) return false
     val last = status.lastSuccessAt
-    if (last != null && Instant.ofEpochMilli(last).atZone(zone).toLocalDate() == today) return false
+    if (last != null && Instant.ofEpochMilli(last).atZone(zone).toLocalDate() == today) {
+        return !status.booksCaughtUpOnce && status.booksPending > 0 && power.charging
+    }
     return power.enough()
+}
+
+/** One more failed automatic run on [today] (R32). The caller leaves network-class failures out. */
+fun BackupStatus.countFailedAuto(today: LocalDate): BackupStatus {
+    val day = today.toString()
+    return copy(failedAutoDay = day, failedAutoAttempts = if (failedAutoDay == day) failedAutoAttempts + 1 else 1)
 }
 
 fun mayUploadBooks(status: BackupStatus, power: Power, manual: Boolean): Boolean = when {

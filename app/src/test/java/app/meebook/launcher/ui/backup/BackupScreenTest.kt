@@ -43,7 +43,6 @@ class BackupScreenTest {
         account = "reader@example.com",
         signedInAt = at(today.minusDays(30), 10, 0),
         lastSuccessAt = at(today, 9, 14),
-        lastAttemptDay = today.toString(),
         koreaderSnapshots = 14,
         mangaSnapshots = 14,
         booksOnDrive = 212,

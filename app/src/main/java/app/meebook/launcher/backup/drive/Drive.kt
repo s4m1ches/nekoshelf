@@ -1,6 +1,7 @@
 package app.meebook.launcher.backup.drive
 
 import java.io.File
+import java.io.IOException
 
 data class RemoteFile(val id: String, val name: String, val size: Long, val props: Map<String, String>)
 
@@ -13,6 +14,13 @@ interface ResumeStore {
 
 /** Token rejected (HTTP 401): the caller should re-authorize. */
 class DriveAuthException(message: String) : Exception(message)
+
+/**
+ * Google Play services gave no access token for a reason other than "the owner must sign in
+ * again" (a timeout, no network, Play services busy or interrupted). Network-class: the backup
+ * shows «нет сети» and tries again at the next wake. The message never contains a token.
+ */
+class TokenUnavailableException(message: String, cause: Throwable?) : IOException(message, cause)
 
 /** Any other failed Drive call. The message never contains the access token. */
 class DriveException(val code: Int, message: String) : Exception(message)

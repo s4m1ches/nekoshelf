@@ -25,17 +25,25 @@ class GoogleAuth(private val context: Context) {
     @Volatile private var last: AuthorizationResult? = null
 
     /**
-     * Returns an access token without UI, or null when the user must interact first (or Play
-     * services fail / time out). **Blocking**: call it only off the main thread (e.g. in a worker).
+     * Returns an access token without UI, or null **only** when the owner must interact first
+     * (consent / sign-in needed: the backup reports that as revoked access and stops automatic
+     * runs). Anything else — Play services failing or timing out, no network, an interrupted wait,
+     * a result without a token — throws [TokenUnavailableException], which the backup treats as
+     * «нет сети» and retries at the next wake. **Blocking**: call it only off the main thread.
      */
-    fun silentToken(): String? = try {
-        val result = Tasks.await(Identity.getAuthorizationClient(context).authorize(request), 20, TimeUnit.SECONDS)
-        if (result.hasResolution()) null else result.accessToken.also { last = result }
-    } catch (e: InterruptedException) {
-        Thread.currentThread().interrupt()
-        null
-    } catch (e: Exception) {
-        null
+    fun silentToken(): String? {
+        val result = try {
+            Tasks.await(Identity.getAuthorizationClient(context).authorize(request), 20, TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw TokenUnavailableException("interrupted while waiting for Google Play services", e)
+        } catch (e: Exception) {
+            throw TokenUnavailableException("Google Play services gave no token", e)
+        }
+        if (result.hasResolution()) return null
+        val token = result.accessToken ?: throw TokenUnavailableException("authorization result without a token", null)
+        last = result
+        return token
     }
 
     /**

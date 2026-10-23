@@ -170,8 +170,16 @@ class BackupController(
                 }
                 return@launch
             }
-            // No UI needed means a token is already available (null also covers Play services failing).
-            afterToken(withContext(io) { auth.silentToken() })
+            // No UI needed means a token is already available; Play services failing gives none.
+            val token = withContext(io) {
+                try {
+                    auth.silentToken()
+                } catch (e: Exception) {
+                    Log.w(TAG, "silent token failed", e)
+                    null
+                }
+            }
+            afterToken(token)
         }
     }
 

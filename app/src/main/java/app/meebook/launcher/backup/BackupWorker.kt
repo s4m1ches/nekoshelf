@@ -13,36 +13,46 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.time.Instant
 import java.time.ZoneId
 
 /**
  * Runs one backup. Always succeeds as far as WorkManager is concerned: failures are recorded in the
  * [BackupStatus], and a retry/backoff would be the timed polling the app does not do; the next wake
- * tries again.
+ * tries again. While a restore offer or a restore holds backups it does nothing at all (not even ask
+ * for a token). A null token means the owner must sign in again; a token that is merely unavailable
+ * for now ([app.meebook.launcher.backup.drive.TokenUnavailableException]) is recorded as «нет сети».
  */
 class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val app = applicationContext
         val manual = inputData.getBoolean(BackupTrigger.KEY_MANUAL, false)
         val store = BackupStore(app)
+        if (store.load().restoreOfferPending) return@withContext Result.success()
         try {
             val token = tokenSource(app)
             if (token() == null) {
-                fail(store, BACKUP_ERROR_AUTH)
+                fail(store, BACKUP_ERROR_AUTH, countsForAuto = !manual)
             } else {
-                runnerFactory(app, store, token).run(BackupTrigger.readPower(app), manual)
+                val power = { BackupTrigger.readPower(app) }
+                runnerFactory(app, store, token).run(power(), manual, power)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            fail(store, backupErrorText(e))
+            fail(store, backupErrorText(e), countsForAuto = !manual && !isNetworkClass(e))
         }
         Result.success()
     }
 
-    private fun fail(store: BackupStore, text: String) {
+    /** Records a failure outside the runner; [countsForAuto] adds it to today's failed automatic runs (R32). */
+    private fun fail(store: BackupStore, text: String, countsForAuto: Boolean) {
         val now = System.currentTimeMillis()
-        store.update { it.copy(lastFailureAt = now, lastError = text) }
+        val today = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).toLocalDate()
+        store.update {
+            val s = it.copy(lastFailureAt = now, lastError = text)
+            if (countsForAuto) s.countFailedAuto(today) else s
+        }
     }
 
     internal companion object {
@@ -69,6 +79,7 @@ fun backupRunner(app: Context, store: BackupStore, token: () -> String?): Backup
         koreaderRoot = koreaderRoot(),
         homeDir = ::koreaderHomeDir,
         mangaBackup = { MangaBridge(app).backup() },
+        mangaAvailable = { MangaBridge(app).available() },
         cacheDir = app.cacheDir,
         clock = System::currentTimeMillis,
         zone = ZoneId.systemDefault(),

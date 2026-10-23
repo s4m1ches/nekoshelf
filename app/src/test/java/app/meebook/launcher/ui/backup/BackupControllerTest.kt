@@ -13,6 +13,8 @@ import app.meebook.launcher.backup.BackupStore
 import app.meebook.launcher.backup.BackupTrigger
 import app.meebook.launcher.backup.FakeDrive
 import app.meebook.launcher.backup.Power
+import app.meebook.launcher.backup.gunzipText
+import app.meebook.launcher.backup.tachibk
 import app.meebook.launcher.backup.drive.Drive
 import app.meebook.launcher.domain.ShelfTab
 import app.meebook.launcher.ui.home.HomeState
@@ -110,7 +112,7 @@ class BackupControllerTest {
                 fake.download(id, to)
             }
         }
-        return BackupRunner(watched, store, ko, { home }, { ByteArrayInputStream("tachibk".toByteArray()) }, tmp.root, { now }, zone)
+        return BackupRunner(watched, store, ko, { home }, { ByteArrayInputStream(tachibk()) }, { true }, tmp.root, { now }, zone)
     }
 
     private fun setPending(v: Boolean) = store.update { it.copy(restoreOfferPending = v) }
@@ -220,7 +222,7 @@ class BackupControllerTest {
         assertTrue(state.restore!!.mangaAvailable)
         controller.saveMangaBackup(); idle()
         val saved = File(downloads, "manga-2026-10-23.tachibk")
-        assertEquals("tachibk", saved.readText())
+        assertEquals("tachibk", gunzipText(saved.readBytes()))
         assertEquals("Сохранено в Загрузки: manga-2026-10-23.tachibk", state.restore?.message)
         assertFalse(state.backupUi.busy)
     }

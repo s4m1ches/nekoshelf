@@ -4,6 +4,7 @@ import app.meebook.launcher.backup.drive.Drive
 import app.meebook.launcher.backup.drive.DriveAuthException
 import app.meebook.launcher.backup.drive.DriveException
 import app.meebook.launcher.backup.drive.RemoteFile
+import app.meebook.launcher.backup.drive.TokenUnavailableException
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
@@ -31,7 +32,11 @@ import javax.net.ssl.SSLException
  *   replaces its own older copy.
  *
  * Runs never overlap within the process: a [run] while another is in progress returns the stored
- * status without doing anything.
+ * status without doing anything. Nor does a run while a restore offer or a restore holds backups
+ * (`restoreOfferPending`, ruling R28): a run queued earlier must not snapshot a half-restored reader.
+ *
+ * [mangaAvailable] says whether «Манга» is installed with the bridge permission granted: only then
+ * is its backup asked for, and only its absence counts as "skipped".
  */
 class BackupRunner(
     private val drive: Drive,
@@ -39,42 +44,49 @@ class BackupRunner(
     private val koreaderRoot: File,
     private val homeDir: () -> File,
     private val mangaBackup: () -> InputStream?,
+    private val mangaAvailable: () -> Boolean,
     private val cacheDir: File,
     private val clock: () -> Long,
     private val zone: ZoneId,
 ) {
     /**
-     * KOReader snapshot → «Манга» (no stream = skipped) → retention → books (if [mayUploadBooks]).
-     * Records the outcome in [store] and returns it.
+     * KOReader snapshot → «Манга» (skipped only when unavailable) → retention → books (if
+     * [mayUploadBooks]; [powerNow] is asked again before each further book, and the books step
+     * stops — not a failure — once the rule no longer allows them, e.g. unplugged during the first
+     * sync). Records the outcome in [store] and returns it. A failed automatic run that is not
+     * network-class is counted for the day (R32).
      *
-     * - A «Манга» stream that fails mid-read does not stop the rest; if everything else worked the
-     *   run counts as a success *and* records «Манга не ответила» as a later failure.
+     * - A «Манга» backup that fails (no stream, an error, empty or not gzip) does not stop the rest;
+     *   if everything else worked the run counts as a success *and* records «Манга не ответила» as
+     *   a later failure.
      * - A book Drive rejects does not stop the other books; the run then ends as a failure with the
      *   first book's error. Network and sign-in errors stop the run at once.
      */
-    fun run(power: Power, manual: Boolean): BackupStatus {
+    fun run(power: Power, manual: Boolean, powerNow: () -> Power = { power }): BackupStatus {
         if (!RUNNING.compareAndSet(false, true)) return store.load()
         try {
-            return runLocked(power, manual)
+            return runLocked(power, manual, powerNow)
         } finally {
             RUNNING.set(false)
         }
     }
 
-    private fun runLocked(power: Power, manual: Boolean): BackupStatus {
+    private fun runLocked(power: Power, manual: Boolean, powerNow: () -> Power): BackupStatus {
         val start = store.load()
+        // The hold (R28), auto and manual alike: the owner's restore answer comes first.
+        if (start.restoreOfferPending) return start
         val now = clock()
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
         val pass = Pass(start)
         val outcome = try {
             val work = newWorkDir()
             try {
-                pass.backUp(today, power, manual, work)
+                pass.backUp(today, power, manual, powerNow, work)
             } finally {
                 work.deleteRecursively()
             }
         } catch (e: Exception) {
-            Outcome(success = false, error = backupErrorText(e))
+            Outcome(success = false, error = backupErrorText(e), networkClass = isNetworkClass(e))
         }
         val c = pass.counts
         // Merged into the current status: a restore answer during the run is kept. A sign-out or a
@@ -82,7 +94,6 @@ class BackupRunner(
         val result = store.update { cur ->
             if (!cur.signedIn || cur.account != start.account) return@update cur
             var s = cur.copy(
-                lastAttemptDay = today.toString(),
                 koreaderSnapshots = c.koreader,
                 mangaSnapshots = c.manga,
                 booksOnDrive = c.onDrive,
@@ -96,6 +107,7 @@ class BackupRunner(
                 val at = if (outcome.success) maxOf(clock(), now + 1) else now
                 s = s.copy(lastFailureAt = at, lastError = outcome.error)
             }
+            if (!manual && !outcome.success && !outcome.networkClass) s = s.countFailedAuto(today)
             s
         }
         if (outcome.success) store.clearResumeSessions()
@@ -111,7 +123,7 @@ class BackupRunner(
         return Files.createTempDirectory(base.toPath(), "run-").toFile()
     }
 
-    private data class Outcome(val success: Boolean, val error: String?)
+    private data class Outcome(val success: Boolean, val error: String?, val networkClass: Boolean = false)
 
     private class Counts(s: BackupStatus) {
         var koreader = s.koreaderSnapshots
@@ -128,7 +140,7 @@ class BackupRunner(
         private val folders = HashMap<String, String>()
         private val fresh = HashSet<String>()
 
-        fun backUp(today: LocalDate, power: Power, manual: Boolean, work: File): Outcome {
+        fun backUp(today: LocalDate, power: Power, manual: Boolean, powerNow: () -> Power, work: File): Outcome {
             val zip = File(work, "$KIND_KOREADER-$today.zip")
             val home = try {
                 homeDir()
@@ -158,20 +170,32 @@ class BackupRunner(
             counts.koreader = retain(KIND_KOREADER, KOREADER_NAME)
             counts.manga = retain(KIND_MANGA, MANGA_NAME)
 
-            val bookError = backUpBooks(manifest, home, root, mayUploadBooks(start, power, manual))
+            val bookError = backUpBooks(manifest, home, root, mayUploadBooks(start, power, manual)) {
+                mayUploadBooks(start, powerNow(), manual)
+            }
             return when {
                 bookError != null -> Outcome(success = false, error = mangaError ?: backupErrorText(bookError))
                 else -> Outcome(success = true, error = mangaError)
             }
         }
 
-        /** Copies «Манга»'s backup into [to]. False when «Манга» gave no stream (unavailable or too old). */
+        /**
+         * Copies «Манга»'s backup into [to]. False (skipped) only when «Манга» is not installed or
+         * the bridge permission is missing; once it is available, no stream, a failing or empty
+         * stream, or one that is not gzip (a `.tachibk` is) is a [MANGA_FAILED] failure.
+         */
         private fun copyManga(to: File): Boolean {
+            val available = try {
+                mangaAvailable()
+            } catch (e: Exception) {
+                throw StepFailure(MANGA_FAILED, e)
+            }
+            if (!available) return false
             val input = try {
                 mangaBackup()
             } catch (e: Exception) {
                 throw StepFailure(MANGA_FAILED, e)
-            } ?: return false
+            } ?: throw StepFailure(MANGA_FAILED, IOException("no backup stream"))
             var total = 0L
             input.use { inp ->
                 to.outputStream().use { out ->
@@ -190,6 +214,7 @@ class BackupRunner(
             }
             // An empty .tachibk would become "the newest" backup while holding nothing.
             if (total == 0L) throw StepFailure(MANGA_FAILED, IOException("empty backup stream"))
+            if (!isGzip(to)) throw StepFailure(MANGA_FAILED, IOException("backup is not gzip"))
             return true
         }
 
@@ -210,8 +235,23 @@ class BackupRunner(
             return files.size - gone.size
         }
 
-        /** Returns the first per-book error (the other books were still tried), or null. */
-        private fun backUpBooks(manifest: List<BookEntry>, home: File, root: String, upload: Boolean): Exception? {
+        /**
+         * Returns the first per-book error (the other books were still tried), or null. [stillAllowed]
+         * is asked before every book after the first; once it says no, the rest stay pending.
+         */
+        private fun backUpBooks(
+            manifest: List<BookEntry>,
+            home: File,
+            root: String,
+            upload: Boolean,
+            stillAllowed: () -> Boolean,
+        ): Exception? {
+            var firstError: Exception? = null
+            // Without network or access every other book would fail the same way.
+            fun bookFailed(e: Exception) {
+                if (e is DriveAuthException || isNetworkClass(e)) throw e
+                if (firstError == null) firstError = e
+            }
             val index = HashMap<String, List<RemoteFile>>()
             for (f in drive.listByProp(PROP_KIND, KIND_BOOK)) {
                 val path = bookPathOf(f.props) ?: continue
@@ -225,8 +265,12 @@ class BackupRunner(
                     pending += b
                 } else if (copies.size > 1) {
                     // Older versions or duplicates of a book whose current copy is on Drive.
-                    copies.filter { it.id != keep.id }.forEach { deleteRemote(it.id) }
-                    index[b.path] = listOf(keep)
+                    try {
+                        copies.filter { it.id != keep.id }.forEach { deleteRemote(it.id) }
+                        index[b.path] = listOf(keep)
+                    } catch (e: Exception) {
+                        bookFailed(e)
+                    }
                 }
             }
             counts.local = manifest.size
@@ -234,11 +278,11 @@ class BackupRunner(
             counts.pending = pending.size
             if (!upload) {
                 counts.booksDone = true
-                return null
+                return firstError
             }
-            var firstError: Exception? = null
             var left = pending.size
-            for (b in pending) {
+            for ((i, b) in pending.withIndex()) {
+                if (i > 0 && !stillAllowed()) break
                 val file = File(home, b.path)
                 if (!file.isFile) { // removed from the reader since the scan; the next scan will not list it
                     counts.pending = --left
@@ -252,9 +296,7 @@ class BackupRunner(
                     counts.onDrive = index.size
                     counts.pending = --left
                 } catch (e: Exception) {
-                    // Without network or access every other book would fail the same way.
-                    if (e is DriveAuthException || isNetworkError(e)) throw e
-                    if (firstError == null) firstError = e
+                    bookFailed(e)
                 }
             }
             counts.booksDone = true
@@ -437,19 +479,28 @@ const val BACKUP_ERROR_AUTH = "Google отозвал доступ — войди
 const val BACKUP_ERROR_NO_NETWORK = "нет сети"
 private const val BACKUP_ERROR_OTHER = "не удалось сделать бэкап"
 
-// InterruptedIOException covers SocketTimeoutException; SocketException covers ConnectException
-// and "connection reset"; SSLException is what a dropped Wi‑Fi or captive portal gives mid-TLS.
-private fun isNetworkError(e: Throwable) =
-    e is UnknownHostException || e is SocketException || e is InterruptedIOException || e is SSLException
+/**
+ * Failures worth retrying at every wake (R32): no or bad network, or Play services not giving a
+ * token for now. InterruptedIOException covers SocketTimeoutException; SocketException covers
+ * ConnectException and "connection reset"; SSLException is what a dropped Wi‑Fi or captive portal
+ * gives mid-TLS.
+ */
+internal fun isNetworkClass(e: Throwable) =
+    e is UnknownHostException || e is SocketException || e is InterruptedIOException || e is SSLException ||
+        e is TokenUnavailableException
+
+/** A `.tachibk` is gzip: it starts with the bytes 1f 8b. */
+private fun isGzip(f: File): Boolean = f.inputStream().use { it.read() == 0x1f && it.read() == 0x8b }
 
 /**
- * The short Russian text the backup screen shows for [e]. Never includes the exception's
+ * The short Russian text the backup screen shows for [e]; [fallback] when nothing more specific
+ * is known (the restore and sign-in paths pass their own). Never includes the exception's
  * message (it may hold paths or server text).
  */
-fun backupErrorText(e: Throwable): String = when {
+fun backupErrorText(e: Throwable, fallback: String = BACKUP_ERROR_OTHER): String = when {
     e is StepFailure -> e.text
     e is DriveAuthException -> BACKUP_ERROR_AUTH
     e is DriveException -> "ошибка Google Диска (код ${e.code})"
-    isNetworkError(e) -> BACKUP_ERROR_NO_NETWORK
-    else -> BACKUP_ERROR_OTHER
+    isNetworkClass(e) -> BACKUP_ERROR_NO_NETWORK
+    else -> fallback
 }

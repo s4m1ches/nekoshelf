@@ -48,7 +48,9 @@ class MangaBridge(context: Context, private val retryDelayMs: Long = 300) {
 
     /**
      * A full «Манга» backup stream (the provider builds it synchronously, which can take seconds),
-     * or null when unavailable / the provider is too old. Caller closes; keep it off the main thread.
+     * or null when the provider gave none (it failed, or «Манга» is too old to have `backup`).
+     * Per the contract a client that has the permission ([available]) treats null as a failure,
+     * not as "skipped". Caller closes; keep it off the main thread.
      */
     fun backup(): InputStream? = withRetry {
         resolver.openFileDescriptor(Uri.parse("content://$AUTHORITY/backup"), "r")

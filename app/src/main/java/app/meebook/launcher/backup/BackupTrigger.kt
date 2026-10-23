@@ -34,9 +34,10 @@ object BackupTrigger {
     /**
      * Cheap and safe to call often (returns at once; the check runs on a background thread): one prefs
      * read + one sticky intent, then at most an enqueue. KEEP leaves a run that is already queued or
-     * running alone. A queued auto run may start later, when the network appears; the runner re-checks
-     * nothing but the status, which is intended. After an auth failure auto runs wait for a new sign-in
-     * ([BackupStore.signedIn] clears the error).
+     * running alone. A queued auto run may start later, when the network appears; at its start the
+     * worker and the runner re-check only the restore hold (a held run does nothing), which is
+     * intended. After an auth failure auto runs wait for a new sign-in ([BackupStore.signedIn]
+     * clears the error). Also called when a restore releases the hold.
      */
     fun onWake(context: Context) {
         val app = context.applicationContext

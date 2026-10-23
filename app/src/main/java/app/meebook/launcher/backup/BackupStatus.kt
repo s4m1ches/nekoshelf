@@ -7,7 +7,10 @@ data class BackupStatus(
     val lastSuccessAt: Long?,
     val lastFailureAt: Long?,
     val lastError: String?,
-    val lastAttemptDay: String?,
+    /** Local day (`YYYY-MM-DD`) that [failedAutoAttempts] counts for (ruling R32). */
+    val failedAutoDay: String?,
+    /** Automatic runs that failed on [failedAutoDay], network-class failures not counted. */
+    val failedAutoAttempts: Int,
     val restoreOfferPending: Boolean,
     val koreaderSnapshots: Int,
     val mangaSnapshots: Int,
@@ -24,7 +27,8 @@ data class BackupStatus(
             lastSuccessAt = null,
             lastFailureAt = null,
             lastError = null,
-            lastAttemptDay = null,
+            failedAutoDay = null,
+            failedAutoAttempts = 0,
             restoreOfferPending = false,
             koreaderSnapshots = 0,
             mangaSnapshots = 0,

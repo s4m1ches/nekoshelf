@@ -19,7 +19,8 @@ class BackupStore(context: Context) : ResumeStore {
             lastSuccessAt = long(LAST_SUCCESS_AT),
             lastFailureAt = long(LAST_FAILURE_AT),
             lastError = prefs.getString(LAST_ERROR, null),
-            lastAttemptDay = prefs.getString(LAST_ATTEMPT_DAY, null),
+            failedAutoDay = prefs.getString(FAILED_AUTO_DAY, null),
+            failedAutoAttempts = prefs.getInt(FAILED_AUTO_ATTEMPTS, 0),
             restoreOfferPending = prefs.getBoolean(RESTORE_OFFER_PENDING, false),
             koreaderSnapshots = prefs.getInt(KOREADER_SNAPSHOTS, 0),
             mangaSnapshots = prefs.getInt(MANGA_SNAPSHOTS, 0),
@@ -39,7 +40,9 @@ class BackupStore(context: Context) : ResumeStore {
                 .putOrRemove(LAST_SUCCESS_AT, s.lastSuccessAt)
                 .putOrRemove(LAST_FAILURE_AT, s.lastFailureAt)
                 .putString(LAST_ERROR, s.lastError)
-                .putString(LAST_ATTEMPT_DAY, s.lastAttemptDay)
+                .remove(OLD_LAST_ATTEMPT_DAY)
+                .putString(FAILED_AUTO_DAY, s.failedAutoDay)
+                .putInt(FAILED_AUTO_ATTEMPTS, s.failedAutoAttempts)
                 .putBoolean(RESTORE_OFFER_PENDING, s.restoreOfferPending)
                 .putInt(KOREADER_SNAPSHOTS, s.koreaderSnapshots)
                 .putInt(MANGA_SNAPSHOTS, s.mangaSnapshots)
@@ -107,7 +110,10 @@ class BackupStore(context: Context) : ResumeStore {
         const val LAST_SUCCESS_AT = "lastSuccessAt"
         const val LAST_FAILURE_AT = "lastFailureAt"
         const val LAST_ERROR = "lastError"
-        const val LAST_ATTEMPT_DAY = "lastAttemptDay"
+        /** v1.1 builds before R32 wrote it; never read. */
+        const val OLD_LAST_ATTEMPT_DAY = "lastAttemptDay"
+        const val FAILED_AUTO_DAY = "failedAutoDay"
+        const val FAILED_AUTO_ATTEMPTS = "failedAutoAttempts"
         const val RESTORE_OFFER_PENDING = "restoreOfferPending"
         const val KOREADER_SNAPSHOTS = "koreaderSnapshots"
         const val MANGA_SNAPSHOTS = "mangaSnapshots"

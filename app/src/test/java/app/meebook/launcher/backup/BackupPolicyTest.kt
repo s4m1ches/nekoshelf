@@ -35,6 +35,38 @@ class BackupPolicyTest {
     }
 
     @Test
+    fun firstSyncBooksStillGoUpOnTheChargerAfterTodaysBackup() {
+        // R31: books waiting for the first full sync upload only while charging; a backup on
+        // battery earlier today must not shut them out until tomorrow.
+        val done = signedIn.copy(lastSuccessAt = ms(today, 1), booksPending = 3)
+        assertTrue(shouldRunAuto(done, today, Power(20, true), zone))
+        assertFalse(shouldRunAuto(done, today, Power(100, false), zone))
+        assertFalse(shouldRunAuto(done.copy(booksPending = 0), today, Power(20, true), zone))
+        assertFalse(shouldRunAuto(done.copy(booksCaughtUpOnce = true), today, Power(20, true), zone))
+        // Still subject to the hold and the attempt cap.
+        assertFalse(shouldRunAuto(done.copy(restoreOfferPending = true), today, Power(20, true), zone))
+        val capped = done.copy(failedAutoDay = today.toString(), failedAutoAttempts = 3)
+        assertFalse(shouldRunAuto(capped, today, Power(20, true), zone))
+    }
+
+    @Test
+    fun threeFailedAutoAttemptsWaitForTheNextDay() {
+        var s = signedIn
+        repeat(2) { s = s.countFailedAuto(today) }
+        assertEquals(today.toString(), s.failedAutoDay)
+        assertEquals(2, s.failedAutoAttempts)
+        assertTrue(shouldRunAuto(s, today, Power(100, false), zone))
+        s = s.countFailedAuto(today)
+        assertFalse(shouldRunAuto(s, today, Power(100, true), zone))
+        // A new day starts the count again.
+        val tomorrow = today.plusDays(1)
+        assertTrue(shouldRunAuto(s, tomorrow, Power(100, false), zone))
+        val next = s.countFailedAuto(tomorrow)
+        assertEquals(tomorrow.toString(), next.failedAutoDay)
+        assertEquals(1, next.failedAutoAttempts)
+    }
+
+    @Test
     fun notSignedInNeverRuns() {
         assertFalse(shouldRunAuto(BackupStatus.EMPTY, today, Power(100, true), zone))
     }

@@ -4,9 +4,12 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.ListenableWorker
 import androidx.work.testing.TestListenableWorkerBuilder
+import androidx.work.workDataOf
+import app.meebook.launcher.backup.drive.TokenUnavailableException
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -35,8 +38,12 @@ class BackupWorkerTest {
         BackupWorker.runnerFactory = runnerFactory0
     }
 
-    private fun runWorker(): ListenableWorker.Result =
-        runBlocking { TestListenableWorkerBuilder<BackupWorker>(context).build().doWork() }
+    private fun runWorker(manual: Boolean = false): ListenableWorker.Result = runBlocking {
+        TestListenableWorkerBuilder<BackupWorker>(context)
+            .setInputData(workDataOf(BackupTrigger.KEY_MANUAL to manual))
+            .build()
+            .doWork()
+    }
 
     @Test
     fun nullTokenRecordsAuthErrorAndSucceeds() {
@@ -64,5 +71,39 @@ class BackupWorkerTest {
         val s = store.load()
         assertEquals(backupErrorText(SecurityException()), s.lastError)
         assertNotNull(s.lastFailureAt)
+    }
+
+    @Test
+    fun tokenHiccupIsNoNetworkNotRevokedAccess() {
+        // A Play-services timeout must not stop automatic backups the way revoked access does (R21).
+        BackupWorker.tokenSource = { { throw TokenUnavailableException("Google Play services timed out", null) } }
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+        val s = store.load()
+        assertEquals(BACKUP_ERROR_NO_NETWORK, s.lastError)
+        assertNotNull(s.lastFailureAt)
+        assertEquals(0, s.failedAutoAttempts)
+    }
+
+    @Test
+    fun pendingRestoreHoldsTheRunBeforeAnyTokenIsAsked() {
+        store.update { it.copy(restoreOfferPending = true) }
+        val before = store.load()
+        var asked = 0
+        BackupWorker.tokenSource = { { asked++; "token" } }
+        BackupWorker.runnerFactory = { _, _, _ -> throw AssertionError("no run while the hold is on") }
+        assertEquals(ListenableWorker.Result.success(), runWorker(manual = true))
+        assertEquals(0, asked)
+        assertEquals(before, store.load())
+    }
+
+    @Test
+    fun failedSetupCountsAsAFailedAutoAttemptButNotManual() {
+        BackupWorker.tokenSource = { { "token" } }
+        BackupWorker.runnerFactory = { _, _, _ -> throw SecurityException("no storage") }
+        runWorker(manual = true)
+        assertEquals(0, store.load().failedAutoAttempts)
+        runWorker()
+        assertEquals(1, store.load().failedAutoAttempts)
+        assertNull(store.load().lastSuccessAt)
     }
 }
