@@ -2,9 +2,9 @@
 
 Лаунчер для Android e-ink ридеров: полка книг KOReader, статистика, «Сейчас читаю», мост к манга-приложению и бэкап в Google Drive. Сделан под Meebook E6, но не привязан к нему.
 
-*English summary: an Android launcher for e-ink readers, built around KOReader. It has a bookshelf, reading statistics, "now reading", a bridge to the Nekoshelf Manga app, an e-ink-friendly UI, Google Drive backup/restore and optional catgirl decor. Install: grab both APKs from [Releases](https://github.com/s4m1ches/nekoshelf/releases/latest), install Nekoshelf Manga first, then the launcher, and just sign in to Google for backups — no setup needed. Self-builds need their own OAuth client. Tested on the Meebook E6. Apache-2.0. Not affiliated with Meebook.*
+*English summary: an Android launcher for e-ink readers, built around KOReader. It has a bookshelf, reading statistics, "now reading", a bridge to the Nekoshelf Manga app (a Komikku fork reworked for e-ink), an e-ink-friendly UI, Google Drive backup/restore and optional catgirl decor. Install: grab both APKs from [Releases](https://github.com/s4m1ches/nekoshelf/releases/latest), install Nekoshelf Manga first, then the launcher, and just sign in to Google for backups — no setup needed. Self-builds need their own OAuth client. Tested on the Meebook E6. Apache-2.0. Not affiliated with Meebook.*
 
-Проекты: **Nekoshelf Launcher** (этот репозиторий), [**Nekoshelf Manga**](https://github.com/s4m1ches/nekoshelf-manga) (форк [Komikku](https://github.com/komikku-app/komikku)), **Nekoshelf KOReader Kit** (`koreader-kit/`).
+Проекты: **Nekoshelf Launcher** (этот репозиторий), [**Nekoshelf Manga**](https://github.com/s4m1ches/nekoshelf-manga) (форк [Komikku](https://github.com/komikku-app/komikku), переделанный под e-ink: без анимаций, чёрно-белый, списки листаются страницами), **Nekoshelf KOReader Kit** (`koreader-kit/`).
 
 ## Установка
 
