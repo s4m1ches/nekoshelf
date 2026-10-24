@@ -59,6 +59,12 @@ internal fun groupDigits(n: Long): String {
     return (if (neg) "-" else "") + out
 }
 
+/**
+ * Whether a stats line shows its page count. Time logged without pages (manga history imported
+ * from Komikku records only time) shows the time alone instead of a misleading "0 стр.".
+ */
+internal fun showsPages(pages: Long, seconds: Long): Boolean = pages > 0 || seconds == 0L
+
 /** "42 мин" under an hour, otherwise whole hours "52 ч". */
 @Composable
 internal fun durationText(seconds: Long): String =

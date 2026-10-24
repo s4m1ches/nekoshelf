@@ -42,11 +42,10 @@ import app.nekoshelf.launcher.domain.YearGrid
 import app.nekoshelf.launcher.ui.home.Grey
 import app.nekoshelf.launcher.ui.home.ScreenPadding
 import app.nekoshelf.launcher.ui.home.ShelfNav
-import app.nekoshelf.launcher.ui.home.durationText
-import app.nekoshelf.launcher.ui.home.groupDigits
 import app.nekoshelf.launcher.ui.home.mangaUnavailableText
 import app.nekoshelf.launcher.ui.home.outlinedCard
 import app.nekoshelf.launcher.ui.home.serif
+import app.nekoshelf.launcher.ui.home.statsLine
 import app.nekoshelf.launcher.ui.home.swipes
 import java.time.LocalDate
 
@@ -199,7 +198,7 @@ private fun HeatSection(
             }
         }
         Text(
-            stringResource(R.string.stats_year_totals, groupDigits(pages), durationText(seconds)),
+            statsLine(R.string.stats_year_totals, R.string.stats_year_totals_time, pages, seconds),
             style = serif(13f, bold = true), maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(top = 6.dp),
         )

@@ -1,5 +1,6 @@
 package app.nekoshelf.launcher.ui.home
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -80,16 +81,22 @@ private fun StatCard(title: String, s: StatsSummary, emptyText: String?, modifie
             Text(emptyText, style = serif(12.5f), maxLines = 2, overflow = TextOverflow.Ellipsis)
         } else {
             Text(
-                stringResource(R.string.stats_today, groupDigits(s.pagesToday.toLong()), durationText(s.secondsToday.toLong())),
+                statsLine(R.string.stats_today, R.string.stats_today_time, s.pagesToday.toLong(), s.secondsToday.toLong()),
                 style = serif(12.5f), maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(
-                stringResource(R.string.stats_total, groupDigits(s.pagesTotal), durationText(s.secondsTotal)),
+                statsLine(R.string.stats_total, R.string.stats_total_time, s.pagesTotal, s.secondsTotal),
                 style = serif(12.5f), maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }
     }
 }
+
+/** [withPages] ("… N стр. · T") or [timeOnly] ("… T"), see [showsPages]. */
+@Composable
+internal fun statsLine(@StringRes withPages: Int, @StringRes timeOnly: Int, pages: Long, seconds: Long): String =
+    if (showsPages(pages, seconds)) stringResource(withPages, groupDigits(pages), durationText(seconds))
+    else stringResource(timeOnly, durationText(seconds))
 
 private val BAR_MAX = 18.dp
 private val BAR_WIDTH = 30.dp

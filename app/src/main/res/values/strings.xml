@@ -11,6 +11,8 @@
     <string name="stats_manga">Манга</string>
     <string name="stats_today">сегодня %1$s стр. · %2$s</string>
     <string name="stats_total">всего %1$s стр. · %2$s</string>
+    <string name="stats_today_time">сегодня %1$s</string>
+    <string name="stats_total_time">всего %1$s</string>
     <string name="minutes">%1$d мин</string>
     <string name="hours">%1$d ч</string>
     <string name="week_days">пвсчпсв</string>
@@ -124,6 +126,7 @@
     <!-- Year stats -->
     <string name="stats_title">Статистика чтения</string>
     <string name="stats_year_totals">%1$s стр. · %2$s</string>
+    <string name="stats_year_totals_time">%1$s</string>
     <string name="stats_manga_backfilled">часть данных — без страниц</string>
     <string name="stats_less">меньше</string>
     <string name="stats_more">больше</string>
