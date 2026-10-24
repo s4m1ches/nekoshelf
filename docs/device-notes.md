@@ -75,7 +75,7 @@ a test device on 2026-10-23.
   `app.nekoshelf.launcher/.MainActivity` and `com.android.settings/.FallbackHome`. The stock
   home's HOME entry point is `LauncherActivity`; `LauncherMainActivity` is its main screen
   (not a HOME activity — it does not take part in the home choice).
-- To make «Лаунчер» the home: press HOME and pick «Лаунчер» → «Всегда» (user step), or
+- To make «Nekoshelf Launcher» the home: press HOME and pick «Nekoshelf Launcher» → «Всегда» (user step), or
   `adb shell cmd package set-home-activity app.nekoshelf.launcher/.MainActivity`.
 - **To go back to the stock home:**
   - `adb shell cmd package set-home-activity com.haoqing.app.hqreader/.view.activity.LauncherActivity`
@@ -83,7 +83,7 @@ a test device on 2026-10-23.
     the stock launcher (the same screen opens with
     `adb shell am start -a android.settings.MANAGE_DEFAULT_APPS_SETTINGS`; on 2026-10-23 it
     showed «Главный экран: Нет», i.e. no default chosen yet).
-  - Uninstalling «Лаунчер» also returns HOME to the stock launcher.
+  - Uninstalling «Nekoshelf Launcher» also returns HOME to the stock launcher.
 - Opening the stock home's main screen directly (without changing the default):
   `adb shell am start -n com.haoqing.app.hqreader/com.haoqing.app.hqreader.view.activity.LauncherMainActivity`.
 

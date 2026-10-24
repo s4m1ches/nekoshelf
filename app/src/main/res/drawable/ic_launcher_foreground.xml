@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cat on a bookshelf. Drawn on a 108 grid, scaled into the 66 dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="54"
+        android:pivotY="48"
+        android:scaleX="0.7"
+        android:scaleY="0.7"
+        android:translateY="6">
+        <!-- books -->
+        <path android:fillColor="#111111" android:pathData="M28,48h11v32h-11z" />
+        <path android:fillColor="#111111" android:pathData="M41,56h10v24h-10z" />
+        <path android:fillColor="#111111" android:pathData="M53,42h15v38h-15z" />
+        <path android:fillColor="#111111" android:pathData="M70,52h10v28h-10z" />
+        <path
+            android:pathData="M28,54H39M53,48H68M53,73H68"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="1.5" />
+        <!-- shelf -->
+        <path
+            android:pathData="M24,82H84"
+            android:strokeColor="#111111"
+            android:strokeLineCap="round"
+            android:strokeWidth="4" />
+        <!-- cat: body, head, ears, tail -->
+        <path
+            android:fillColor="#111111"
+            android:pathData="M53.5,34a7,8.5 0,1 0,14 0a7,8.5 0,1 0,-14 0z" />
+        <path
+            android:fillColor="#111111"
+            android:pathData="M54.5,23a6,6 0,1 0,12 0a6,6 0,1 0,-12 0z" />
+        <path android:fillColor="#111111" android:pathData="M55,21L56,12L60,18z" />
+        <path android:fillColor="#111111" android:pathData="M61,18L65,12L66,21z" />
+        <path
+            android:pathData="M66,38q9,1 7,13"
+            android:strokeColor="#111111"
+            android:strokeLineCap="round"
+            android:strokeWidth="3" />
+    </group>
+</vector>
