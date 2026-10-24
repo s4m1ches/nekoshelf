@@ -117,6 +117,12 @@ class MangaBridgeTest {
         )
     }
 
+    @Test fun libraryOrNullIsNullWhenTheProviderFailsAndEmptyWhenTheLibraryIsEmpty() {
+        FakeMangaProvider.failWith = IllegalStateException("cold start")
+        assertNull(bridge.libraryOrNull())
+        assertEquals(emptyList<Manga>(), bridge.library())
+    }
+
     private val contractColumns = arrayOf(
         "manga_id", "title", "source_name", "date_added", "last_read_at", "chapters_total",
         "chapters_read", "next_chapter_id", "next_chapter_name", "cover_version", "chapters_new",

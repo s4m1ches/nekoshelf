@@ -61,6 +61,7 @@ fun NowReading(
     mangaAvailable: Boolean,
     mangaInstalled: Boolean,
     mangaLoaded: Boolean,
+    mangaFailed: Boolean = false,
     loaded: Boolean,
     onBook: (Book) -> Unit,
     onManga: (Manga) -> Unit,
@@ -111,6 +112,8 @@ fun NowReading(
             } else if (!mangaLoaded) {
                 // «Манга» not read yet (its provider can take seconds on a cold start).
                 EmptyCard("", cardMod)
+            } else if (mangaFailed) {
+                EmptyCard(stringResource(R.string.manga_not_responding), cardMod)
             } else {
                 EmptyCard(
                     stringResource(if (mangaAvailable) R.string.empty_manga_history else mangaUnavailableText(mangaInstalled)),

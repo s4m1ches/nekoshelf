@@ -38,7 +38,10 @@ class MangaBridge(context: Context, private val retryDelayMs: Long = 300) {
         false
     }
 
-    fun library(): List<Manga> = queryRows("library", ::readLibrary) ?: emptyList()
+    fun library(): List<Manga> = libraryOrNull() ?: emptyList()
+
+    /** The library, or null when the provider did not answer (an empty library is an empty list). */
+    fun libraryOrNull(): List<Manga>? = queryRows("library", ::readLibrary)
 
     /** Cached cover image, or null when none is cached / the bridge is unavailable. Caller closes. */
     fun cover(mangaId: Long): InputStream? = withRetry {

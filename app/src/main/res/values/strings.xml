@@ -23,6 +23,7 @@
     <string name="empty_manga">Манга не установлена</string>
     <string name="manga_no_access">Нет доступа к «Манге»</string>
     <string name="empty_manga_history">В «Манге» ещё ничего не читали</string>
+    <string name="manga_not_responding">«Манга» не ответила, повторю через несколько секунд</string>
     <string name="book_progress">KOReader · %1$d%%</string>
     <string name="book_progress_left">%1$d%% · осталось %2$s</string>
     <string name="book_done">KOReader · прочитано</string>
