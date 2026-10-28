@@ -76,3 +76,19 @@ data class MangaItem(val manga: Manga, val asCover: Boolean, val caughtUp: Boole
 data class SeriesGroup(val name: String, val items: List<BookItem>) : ShelfItem
 
 enum class ShelfTab { BOOKS, MANGA, ALL }
+
+/** Seconds of books and of manga: one month of a year, or one weekday's average. */
+data class Split(val bookSeconds: Long, val mangaSeconds: Long)
+
+/**
+ * A year at a glance, books and manga together. [currentStreak] is 0 unless the year is the
+ * current one; [weekdays] are average seconds per weekday, Monday first.
+ */
+data class YearOverview(
+    val seconds: Long,
+    val readingDays: Int,
+    val bestStreak: Int,
+    val currentStreak: Int,
+    val months: List<Split>,
+    val weekdays: List<Split>,
+)

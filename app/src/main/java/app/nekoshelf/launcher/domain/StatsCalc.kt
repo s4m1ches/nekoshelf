@@ -55,4 +55,71 @@ object StatsCalc {
         }
         return out
     }
+
+    /**
+     * [YearOverview] of [year]. A reading day has more than zero seconds of books or manga. The
+     * current streak counts back from [today] (from yesterday while today has nothing yet) and may
+     * reach into the previous year; the best streak counts only days inside [year]. Weekday
+     * averages divide by how many of that weekday fall between the year's first reading day and
+     * [today] (or 31 December for a past year), books and manga apart.
+     */
+    fun overview(books: List<DayStat>, manga: List<DayStat>, year: Int, today: LocalDate): YearOverview {
+        val all = HashMap<LocalDate, Long>()
+        for (s in books + manga) all.merge(s.day, s.seconds.toLong(), Long::plus)
+        val bookSecs = HashMap<LocalDate, Long>()
+        for (s in books) bookSecs.merge(s.day, s.seconds.toLong(), Long::plus)
+        val read = all.filterValues { it > 0 }.keys
+        val inYear = read.filter { it.year == year }.sorted()
+
+        val months = MutableList(12) { Split(0L, 0L) }
+        for (s in books) if (s.day.year == year) months[s.day.monthValue - 1].let { months[s.day.monthValue - 1] = it.copy(bookSeconds = it.bookSeconds + s.seconds) }
+        for (s in manga) if (s.day.year == year) months[s.day.monthValue - 1].let { months[s.day.monthValue - 1] = it.copy(mangaSeconds = it.mangaSeconds + s.seconds) }
+
+        var best = 0
+        var run = 0
+        var prev: LocalDate? = null
+        for (d in inYear) {
+            run = if (prev != null && prev.plusDays(1) == d) run + 1 else 1
+            best = maxOf(best, run)
+            prev = d
+        }
+
+        var current = 0
+        if (year == today.year) {
+            var d = if (today in read) today else today.minusDays(1)
+            while (d in read) {
+                current++
+                d = d.minusDays(1)
+            }
+        }
+
+        val weekdays = MutableList(7) { Split(0L, 0L) }
+        val first = inYear.firstOrNull()
+        val last = minOf(today, LocalDate.of(year, 12, 31))
+        if (first != null && !first.isAfter(last)) {
+            val bookSum = LongArray(7)
+            val allSum = LongArray(7)
+            val count = IntArray(7)
+            var d: LocalDate = first
+            while (!d.isAfter(last)) {
+                val w = d.dayOfWeek.value - 1
+                bookSum[w] += bookSecs[d] ?: 0L
+                allSum[w] += all[d] ?: 0L
+                count[w]++
+                d = d.plusDays(1)
+            }
+            for (w in 0..6) if (count[w] > 0) {
+                weekdays[w] = Split(bookSum[w] / count[w], (allSum[w] - bookSum[w]) / count[w])
+            }
+        }
+
+        return YearOverview(
+            seconds = inYear.sumOf { all.getValue(it) },
+            readingDays = inYear.size,
+            bestStreak = best,
+            currentStreak = current,
+            months = months,
+            weekdays = weekdays,
+        )
+    }
 }

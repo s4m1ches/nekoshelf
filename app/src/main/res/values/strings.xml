@@ -133,6 +133,20 @@
     <string name="stats_more">больше</string>
     <string name="stats_prev_year">Предыдущий год</string>
     <string name="stats_next_year">Следующий год</string>
+    <string name="stats_tile_total">за год</string>
+    <string name="stats_tile_days">с чтением</string>
+    <string name="stats_tile_average">в день чтения</string>
+    <string name="stats_tile_streak">подряд · рекорд %1$d</string>
+    <string name="stats_tile_best">рекорд подряд</string>
+    <string name="stats_by_month">По месяцам, ч</string>
+    <string name="stats_by_weekday">По дням недели, мин</string>
+    <string name="stats_legend_books">книги</string>
+    <string name="stats_legend_manga">манга</string>
+    <string name="stats_under_hour">&lt;1</string>
+    <!-- Russian plural forms picked in code (russianPlural), whatever the device language. -->
+    <string name="stats_days_one">%1$d день</string>
+    <string name="stats_days_few">%1$d дня</string>
+    <string name="stats_days_many">%1$d дней</string>
     <string-array name="months_short">
         <item>янв</item>
         <item>фев</item>
@@ -149,11 +163,11 @@
     </string-array>
     <string-array name="weekdays_short">
         <item>пн</item>
-        <item></item>
+        <item>вт</item>
         <item>ср</item>
-        <item></item>
+        <item>чт</item>
         <item>пт</item>
-        <item></item>
-        <item></item>
+        <item>сб</item>
+        <item>вс</item>
     </string-array>
 </resources>
