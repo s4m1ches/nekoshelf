@@ -22,8 +22,8 @@ android {
         applicationId = "app.nekoshelf.launcher"
         minSdk = 28
         targetSdk = 28
-        versionCode = 5
-        versionName = "1.2.1"
+        versionCode = 6
+        versionName = "1.2.2"
     }
 
     signingConfigs {
