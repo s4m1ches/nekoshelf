@@ -5,6 +5,7 @@ import android.os.Environment
 import android.os.SystemClock
 import android.util.Log
 import app.nekoshelf.launcher.data.books.BookCovers
+import app.nekoshelf.launcher.data.books.BookMetas
 import app.nekoshelf.launcher.data.books.BookScanner
 import app.nekoshelf.launcher.data.koreader.History
 import app.nekoshelf.launcher.data.koreader.KoreaderPaths
@@ -55,6 +56,11 @@ data class HomeData(
     val mangaDays: List<DayStat> = emptyList(),
     /** Some «Манга» days come from the history import (seconds known, no pages). */
     val mangaBackfilled: Boolean = false,
+    /**
+     * «Манга» is available but its bridge did not answer and there is no earlier read to show:
+     * the manga parts say so instead of looking like an empty library.
+     */
+    val mangaFailed: Boolean = false,
     /** Estimated time to finish [nowBook]; null without enough reading statistics. */
     val nowBookSecondsLeft: Long? = null,
 ) {
@@ -89,6 +95,7 @@ class HomeLoader(
     private val cacheDir = appContext.cacheDir
     val bridge = MangaBridge(appContext)
     private val bookCovers = BookCovers(File(cacheDir, "covers"), COVER_PX)
+    private val bookMetas = BookMetas(File(cacheDir, "book_meta.json"))
     private val mangaCovers = MangaCovers(cacheDir) { bridge.cover(it) }
     /** Last KOReader stats read, keyed on the DB files' size + mtime (and the zone). Under [LOCK]. */
     private var statsMemo: Pair<List<Any>, List<DayStat>>? = null
@@ -111,10 +118,13 @@ class HomeLoader(
         val books = readBooks()
         val t1 = SystemClock.elapsedRealtime()
         onBooks(merge(books, lastManga))
-        val manga = readManga(books.today, books.nowMs)
+        // A bridge that didn't answer keeps the last good read rather than blanking the shelf.
+        val manga = readManga(books.today, books.nowMs).let { m ->
+            if (m.failed) lastManga?.takeIf { it.available && !it.failed } ?: m else m
+        }
         lastManga = manga
         val t2 = SystemClock.elapsedRealtime()
-        Log.i(TAG, "load: books=${books.books.size} manga=${manga.manga.size} koreader=${t1 - t0}ms manga=${t2 - t1}ms")
+        Log.i(TAG, "load: books=${books.books.size} manga=${manga.manga.size}${if (manga.failed) " (bridge failed)" else ""} koreader=${t1 - t0}ms manga=${t2 - t1}ms")
         merge(books, manga)
     }
 
@@ -140,6 +150,8 @@ class HomeLoader(
         val backfilled: Boolean,
         val nowManga: Manga?,
         val covers: Map<Long, File>,
+        /** Available, but the library query failed. */
+        val failed: Boolean = false,
     )
 
     private fun readBooks(): BooksPart {
@@ -148,9 +160,10 @@ class HomeLoader(
         val nowMs = System.currentTimeMillis()
         val homeDir = KoreaderPaths(koreaderRoot).homeDir()
         val opened = History.read(koreaderRoot).associate { it.file.absolutePath to it.time }
-        val books = BookScanner.scan(homeDir).map { bf ->
-            Book.from(bf, Sidecar.read(bf.file), opened[bf.file.absolutePath])
-        }
+        val found = BookScanner.scan(homeDir).map { it to Sidecar.read(it.file) }
+        // Until KOReader opens a book its sidecar has no title: read the one inside the file.
+        val metas = bookMetas.resolve(found.filter { (_, state) -> state?.title.isNullOrBlank() }.map { it.first.file })
+        val books = found.map { (bf, state) -> Book.from(bf, state, opened[bf.file.absolutePath], metas[bf.file]) }
         val bookDb = File(koreaderRoot, "settings/statistics.sqlite3")
         val bookDays = bookDays(bookDb, zone)
         val nowBook = ShelfBuilder.nowReadingBook(books)
@@ -174,7 +187,8 @@ class HomeLoader(
         val installed = bridge.installed()
         val available = installed && bridge.available()
         if (!available) return MangaPart(installed, false, emptyList(), emptyList(), null, false, null, emptyMap())
-        val manga = bridge.library()
+        val manga = bridge.libraryOrNull()
+            ?: return MangaPart(installed, true, emptyList(), emptyList(), null, false, null, emptyMap(), failed = true)
         val days = bridge.daily()
         val backfilled = bridge.hasBackfilledDays()
         val (pages, seconds) = bridge.totals()
@@ -208,6 +222,7 @@ class HomeLoader(
         bookDays = b.bookDays,
         mangaDays = m?.days.orEmpty(),
         mangaBackfilled = m?.backfilled ?: false,
+        mangaFailed = m?.failed ?: false,
         nowBookSecondsLeft = b.nowBookSecondsLeft,
     )
 

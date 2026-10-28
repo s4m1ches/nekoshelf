@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +28,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -42,6 +42,7 @@ import app.nekoshelf.launcher.domain.YearGrid
 import app.nekoshelf.launcher.ui.home.Grey
 import app.nekoshelf.launcher.ui.home.ScreenPadding
 import app.nekoshelf.launcher.ui.home.ShelfNav
+import app.nekoshelf.launcher.ui.home.catgirlDecors
 import app.nekoshelf.launcher.ui.home.mangaUnavailableText
 import app.nekoshelf.launcher.ui.home.outlinedCard
 import app.nekoshelf.launcher.ui.home.serif
@@ -55,7 +56,7 @@ internal val HeatGreys = listOf(Color(0xFFFFFFFF), Color(0xFFC8C8C8), Color(0xFF
 private val LABEL_W = 24.dp
 private val GAP = 1.dp
 /** Rows are taller than columns (53 columns leave the grid short on a portrait screen). */
-private const val ROW_RATIO = 2f
+private const val ROW_RATIO = 1.5f
 private val OUTLINE = Color(0xFF969696)
 
 /** Years offered for paging: from the earliest day with data to the current year, ascending. */
@@ -65,9 +66,11 @@ internal fun statsYears(books: List<DayStat>, manga: List<DayStat>, currentYear:
 }
 
 /**
- * Year reading heatmaps, GitHub style: «Книги» and «Манга», one column per week and 7 rows
- * (Monday first; 53 columns, 54 in a leap year starting on Sunday), five grey levels, month
- * labels on top and the year's totals underneath. [nav] pages the years (page 0 = oldest).
+ * The year's reading: four overview tiles, the heatmaps «Книги» and «Манга» GitHub style (one
+ * column per week and 7 rows, Monday first; 53 columns, 54 in a leap year starting on Sunday;
+ * five grey levels, month labels on top, the year's totals underneath), then hours per month
+ * and minutes per weekday. Two catgirls, new ones each time the screen opens, stand by the
+ * tiles and the charts. [nav] pages the years (page 0 = oldest).
  * Back, «Закрыть» or a swipe down returns home; swipes sideways, ‹ › and the hardware page keys
  * change the year. No animation.
  */
@@ -81,6 +84,9 @@ fun StatsScreen(data: HomeData, nav: ShelfNav, onDismiss: () -> Unit) {
     }
     val index = nav.page.coerceIn(0, years.size - 1)
     val year = years[index]
+    val overview = remember(data.bookDays, data.mangaDays, year, data.today) { StatsCalc.overview(data.bookDays, data.mangaDays, year, data.today) }
+    val context = LocalContext.current
+    val decors = remember { catgirlDecors(context.assets).shuffled().take(2) }
     Column(
         Modifier.fillMaxSize().background(Color.White).padding(ScreenPadding)
             .swipes(onDown = onDismiss, onLeft = { nav.next() }, onRight = { nav.prev() }),
@@ -90,15 +96,16 @@ fun StatsScreen(data: HomeData, nav: ShelfNav, onDismiss: () -> Unit) {
                 stringResource(R.string.stats_title), style = serif(20f, bold = true),
                 modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
+            YearPager(year, index > 0, index < years.size - 1, { nav.prev() }, { nav.next() })
             Box(Modifier.outlinedCard().clickable(role = Role.Button, onClick = onDismiss).padding(horizontal = 14.dp, vertical = 6.dp)) {
                 Text(stringResource(R.string.close), style = serif(15f, bold = true))
             }
         }
-        YearPager(year, index > 0, index < years.size - 1, { nav.prev() }, { nav.next() })
+        OverviewTiles(overview, currentYear = year == data.today.year, decor = decors.getOrNull(0))
         HeatSection(
             title = stringResource(R.string.stats_books),
             days = data.bookDays, year = year, today = data.today,
-            note = null, unavailable = null,
+            note = null, unavailable = null, legend = true,
         )
         HeatSection(
             title = stringResource(R.string.stats_manga),
@@ -106,16 +113,15 @@ fun StatsScreen(data: HomeData, nav: ShelfNav, onDismiss: () -> Unit) {
             note = if (data.mangaBackfilled && data.mangaDays.any { it.day.year == year }) stringResource(R.string.stats_manga_backfilled) else null,
             unavailable = if (data.mangaLoaded && !data.mangaAvailable) stringResource(mangaUnavailableText(data.mangaInstalled)) else null,
         )
-        Spacer(Modifier.weight(1f))
-        Legend()
+        ChartsCard(overview, year, data.today, decors.getOrNull(1), Modifier.padding(top = 8.dp).weight(1f))
     }
 }
 
 @Composable
 private fun YearPager(year: Int, hasPrev: Boolean, hasNext: Boolean, onPrev: () -> Unit, onNext: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+    Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
         YearArrow("‹", hasPrev, stringResource(R.string.stats_prev_year), onPrev)
-        Text(year.toString(), style = serif(20f, bold = true), modifier = Modifier.padding(horizontal = 18.dp))
+        Text(year.toString(), style = serif(20f, bold = true), modifier = Modifier.padding(horizontal = 4.dp))
         YearArrow("›", hasNext, stringResource(R.string.stats_next_year), onNext)
     }
 }
@@ -123,7 +129,7 @@ private fun YearPager(year: Int, hasPrev: Boolean, hasNext: Boolean, onPrev: () 
 @Composable
 private fun YearArrow(glyph: String, enabled: Boolean, label: String, onClick: () -> Unit) {
     Box(
-        Modifier.size(width = 64.dp, height = 44.dp).clickable(enabled = enabled, onClickLabel = label, role = Role.Button, onClick = onClick),
+        Modifier.size(width = 44.dp, height = 44.dp).clickable(enabled = enabled, onClickLabel = label, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(glyph, style = serif(26f, bold = true, color = if (enabled) Color.Black else Color(0xFFAAAAAA)), modifier = Modifier.offset(y = (-3).dp))
@@ -138,6 +144,7 @@ private fun HeatSection(
     today: LocalDate,
     note: String?,
     unavailable: String?,
+    legend: Boolean = false,
 ) {
     val heat = remember(days, year) { StatsCalc.heatmap(days, year) }
     val pages = remember(days, year) { days.filter { it.day.year == year }.sumOf { it.pages.toLong() } }
@@ -145,7 +152,10 @@ private fun HeatSection(
     val months = stringArrayResource(R.array.months_short)
     val weekdays = stringArrayResource(R.array.weekdays_short)
     Column(Modifier.fillMaxWidth().padding(top = 8.dp).outlinedCard().padding(horizontal = 10.dp, vertical = 8.dp)) {
-        Text(title, style = serif(16f, bold = true), maxLines = 1)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, style = serif(16f, bold = true), maxLines = 1, modifier = Modifier.weight(1f))
+            if (legend) Legend()
+        }
         if (unavailable != null) {
             Text(unavailable, style = serif(13f, color = Grey), modifier = Modifier.padding(top = 4.dp))
             return@Column
@@ -167,9 +177,7 @@ private fun HeatSection(
                     Column {
                         weekdays.forEach { w ->
                             Box(Modifier.height(rowPitch).width(LABEL_W)) {
-                                if (w.isNotEmpty()) {
-                                    Text(w, style = serif(10f, color = Grey), maxLines = 1, softWrap = false, modifier = Modifier.align(Alignment.CenterStart))
-                                }
+                                Text(w, style = serif(9f, color = Grey), maxLines = 1, softWrap = false, modifier = Modifier.align(Alignment.CenterStart))
                             }
                         }
                     }
@@ -208,11 +216,11 @@ private fun HeatSection(
 
 @Composable
 private fun Legend() {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        Text(stringResource(R.string.stats_less), style = serif(11f, color = Grey))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(stringResource(R.string.stats_less), style = serif(10f, color = Grey))
         HeatGreys.forEach { c ->
-            Box(Modifier.padding(start = 4.dp).size(14.dp).background(c).border(1.dp, Color(0xFF969696)))
+            Box(Modifier.padding(start = 3.dp).size(11.dp).background(c).border(1.dp, Color(0xFF969696)))
         }
-        Text(stringResource(R.string.stats_more), style = serif(11f, color = Grey), modifier = Modifier.padding(start = 6.dp))
+        Text(stringResource(R.string.stats_more), style = serif(10f, color = Grey), modifier = Modifier.padding(start = 4.dp))
     }
 }

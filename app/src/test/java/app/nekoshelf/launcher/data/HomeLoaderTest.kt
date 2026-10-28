@@ -141,6 +141,32 @@ class HomeLoaderTest {
     }
 
     @Test
+    fun aBridgeThatDoesNotAnswerIsReportedNotShownAsAnEmptyLibrary() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        withManga(context)
+        FakeMangaProvider.failWith = IllegalStateException("cold start")
+        val data = HomeLoader(context, koreaderRoot(pages = 1)).load()
+        assertTrue(data.mangaLoaded)
+        assertTrue(data.mangaAvailable)
+        assertTrue(data.mangaFailed)
+        assertTrue(data.manga.isEmpty())
+        assertNull(data.mangaStats)
+    }
+
+    @Test
+    fun aFailedReadKeepsTheLastGoodManga() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        withManga(context)
+        val loader = HomeLoader(context, koreaderRoot(pages = 1))
+        val good = loader.load()
+        FakeMangaProvider.failWith = IllegalStateException("cold start")
+        val again = loader.load()
+        assertFalse(again.mangaFailed)
+        assertEquals(good.manga, again.manga)
+        assertEquals(good.mangaStats, again.mangaStats)
+    }
+
+    @Test
     fun statsAreReReadOnlyWhenTheDbChanges() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val root = koreaderRoot(pages = 5)

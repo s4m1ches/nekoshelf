@@ -1,6 +1,7 @@
 package app.nekoshelf.launcher.domain
 
 import app.nekoshelf.launcher.data.books.BookFile
+import app.nekoshelf.launcher.data.books.BookMeta
 import app.nekoshelf.launcher.data.koreader.BookState
 import java.io.File
 import java.time.LocalDate
@@ -31,11 +32,14 @@ data class Book(
     val addedAt: Long,
 ) {
     companion object {
-        /** Builds a [Book]: title = metadata title ?: file name without extension; series = metadata ?: folder. */
-        fun from(bookFile: BookFile, state: BookState?, lastOpenedSeconds: Long?): Book = Book(
+        /**
+         * Builds a [Book]: title = sidecar title ?: the title inside the file ([meta]) ?: file name
+         * without extension, authors likewise; series = sidecar ?: folder.
+         */
+        fun from(bookFile: BookFile, state: BookState?, lastOpenedSeconds: Long?, meta: BookMeta? = null): Book = Book(
             file = bookFile.file,
-            title = state?.title?.takeIf { it.isNotBlank() } ?: baseName(bookFile.file),
-            authors = state?.authors?.takeIf { it.isNotBlank() },
+            title = state?.title?.takeIf { it.isNotBlank() } ?: meta?.title?.takeIf { it.isNotBlank() } ?: baseName(bookFile.file),
+            authors = state?.authors?.takeIf { it.isNotBlank() } ?: meta?.authors?.takeIf { it.isNotBlank() },
             series = state?.series?.takeIf { it.isNotBlank() } ?: bookFile.folderSeries,
             seriesIndex = state?.seriesIndex,
             percent = state?.percent,
@@ -76,3 +80,19 @@ data class MangaItem(val manga: Manga, val asCover: Boolean, val caughtUp: Boole
 data class SeriesGroup(val name: String, val items: List<BookItem>) : ShelfItem
 
 enum class ShelfTab { BOOKS, MANGA, ALL }
+
+/** Seconds of books and of manga: one month of a year, or one weekday's average. */
+data class Split(val bookSeconds: Long, val mangaSeconds: Long)
+
+/**
+ * A year at a glance, books and manga together. [currentStreak] is 0 unless the year is the
+ * current one; [weekdays] are average seconds per weekday, Monday first.
+ */
+data class YearOverview(
+    val seconds: Long,
+    val readingDays: Int,
+    val bestStreak: Int,
+    val currentStreak: Int,
+    val months: List<Split>,
+    val weekdays: List<Split>,
+)

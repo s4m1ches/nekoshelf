@@ -34,8 +34,14 @@ class YearGridTest {
     @Test fun monthLabelsAreTwelveAscendingAndFarApart() {
         val m = YearGrid.monthColumns(2026)
         assertEquals((1..12).toList(), m.map { it.first })
-        assertEquals(0, m.first().second)
         m.zipWithNext().forEach { (a, b) -> assertTrue(b.second - a.second >= 4) }
-        assertEquals(YearGrid.cell(LocalDate.of(2026, 5, 1)).first, m[4].second)
+        assertEquals(YearGrid.cell(LocalDate.of(2026, 5, 4)).first, m[4].second) // 1 May is a Friday; the label waits for Monday 4 May
+    }
+
+    @Test fun aMonthLabelStandsOverItsFirstWholeWeek() {
+        val m = YearGrid.monthColumns(2026)
+        assertEquals(1, m[0].second) // 1 Jan 2026 is a Thursday: column 0 is mostly December
+        assertEquals(YearGrid.cell(LocalDate.of(2026, 6, 1)).first, m[5].second) // 1 June is a Monday
+        assertEquals(YearGrid.cell(LocalDate.of(2026, 11, 2)).first, m[10].second) // not over 26 Oct – 1 Nov
     }
 }

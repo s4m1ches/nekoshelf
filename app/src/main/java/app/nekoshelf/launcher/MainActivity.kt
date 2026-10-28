@@ -48,6 +48,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -76,6 +77,7 @@ class MainActivity : ComponentActivity(), HomeActions {
     private var packageReceiver: BroadcastReceiver? = null
     private var startJob: Job? = null
     private var quietJob: Job? = null
+    private var mangaRetryJob: Job? = null
     private var pictureSettled: CompletableDeferred<Unit>? = null
     /** System.nanoTime() of the running refresh's start, for the timing log. */
     private var refreshStart = 0L
@@ -224,6 +226,22 @@ class MainActivity : ComponentActivity(), HomeActions {
                 awaitFrameDrawn()
                 flash()
             }
+            retryMangaIfFailed()
+        }
+    }
+
+    /**
+     * «Манга» did not answer (its provider can still be starting): reload quietly, up to
+     * [MANGA_RETRIES] times [MANGA_RETRY_MS] apart, while the screen says it will retry.
+     */
+    private fun retryMangaIfFailed(attempt: Int = 1) {
+        mangaRetryJob?.cancel()
+        if (!state.data.mangaFailed || attempt > MANGA_RETRIES) return
+        mangaRetryJob = lifecycleScope.launch {
+            delay(MANGA_RETRY_MS)
+            if (startJob?.isActive == true) return@launch
+            state.data = withContext(Dispatchers.IO) { loader.load() }
+            retryMangaIfFailed(attempt + 1)
         }
     }
 
@@ -419,6 +437,9 @@ class MainActivity : ComponentActivity(), HomeActions {
         val HAOQING_PAGE_DOWN = KeyEvent.keyCodeFromString("HAOQING_PAGE_DOWN").takeIf { it > 0 } ?: -1
         /** How long the full refresh waits for the «Манга» phase after the books phase. */
         const val MANGA_WAIT_MS = 1_000L
+        /** Quiet reloads after «Манга» did not answer, and the pause before each. */
+        const val MANGA_RETRIES = 3
+        const val MANGA_RETRY_MS = 5_000L
         const val PREF_TAB = "shelf_tab"
         const val PREF_DECOR = "decor_next"
         /** Before v1.1: no longer read, removed in onCreate. */
