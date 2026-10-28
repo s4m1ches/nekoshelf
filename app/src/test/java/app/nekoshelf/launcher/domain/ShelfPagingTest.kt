@@ -71,4 +71,33 @@ class ShelfPagingTest {
     fun emptyGivesNoPages() {
         assertEquals(0, shelfPages(emptyList(), 20, 2).size)
     }
+
+    // --- gaps around series ---
+
+    @Test
+    fun aGapStandsWhereASeriesMeetsAnotherUnitOnly() {
+        val g = SeriesGroup("S", List(2) { book(it) })
+        assertEquals(true, gapBetween(g, book(9)))
+        assertEquals(true, gapBetween(book(9), g))
+        assertEquals(true, gapBetween(g, SeriesGroup("T", List(2) { book(10 + it) })))
+        assertEquals(false, gapBetween(book(1), book(2)))
+    }
+
+    @Test
+    fun gapsTakeRowRoomSoAUnitThatNoLongerFitsMovesOn() {
+        // Units are thirds of a slot here: a spine is 3, a gap 1. Group (6) + gap (1) + spine (3) = 10.
+        val items = listOf<ShelfItem>(SeriesGroup("S", List(2) { book(it) }), book(9))
+        assertEquals(listOf(2), shelfPages(items, slotsPerRow = 10, rows = 3, unitsPerSlot = 3, gap = 1)[0].map { it.size })
+        assertEquals(listOf(1, 1), shelfPages(items, slotsPerRow = 9, rows = 3, unitsPerSlot = 3, gap = 1)[0].map { it.size })
+        // Without a series neighbour no gap is spent: three spines fill 9 units exactly.
+        assertEquals(listOf(3), shelfPages(List(3) { book(it) }, slotsPerRow = 9, rows = 3, unitsPerSlot = 3, gap = 1)[0].map { it.size })
+    }
+
+    @Test
+    fun aSplitSeriesLeavesRoomForItsGapBeforeTheFirstFragment() {
+        // Spine (3) + gap (1) leave 5 of 9 units: one volume (3) fits before the row breaks.
+        val items = listOf<ShelfItem>(book(0), SeriesGroup("S", List(4) { book(10 + it) }))
+        val rows = shelfPages(items, slotsPerRow = 9, rows = 5, unitsPerSlot = 3, gap = 1)[0]
+        assertEquals(listOf(1, 3), rows.map { r -> r.sumOf { (it as? SeriesGroup)?.items?.size ?: 0 } })
+    }
 }

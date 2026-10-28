@@ -47,6 +47,7 @@ import app.nekoshelf.launcher.domain.MangaItem
 import app.nekoshelf.launcher.domain.SeriesGroup
 import app.nekoshelf.launcher.domain.ShelfItem
 import app.nekoshelf.launcher.domain.ShelfTab
+import app.nekoshelf.launcher.domain.gapBetween
 import app.nekoshelf.launcher.domain.shelfPages
 import app.nekoshelf.launcher.domain.slotWidth
 import java.io.File
@@ -98,11 +99,15 @@ private val MIN_BOOK = 68.dp
 private val MAX_BOOK = 150.dp
 private const val COVER_RATIO = 1.45f
 private val SHELF_INSET = 6.dp
+/** Layout units per slot: the gap where a series meets another unit is one unit, a third of a spine. */
+private const val UNITS_PER_SLOT = 3
+private const val GAP_UNITS = 1
 
 /**
  * Rows of books on planks, as many rows as fit, paged (swipe, ‹ ›, hardware keys via [nav]).
  * In-progress items are covers (3 slots), the rest spines with vertical titles (1 slot); a
- * series group stands together with its label under the plank. Caught-up manga covers carry
+ * series group stands together with its label under the plank, with a gap on either side.
+ * A book outside any series has a white spine, so it does not read as one more volume. Caught-up manga covers carry
  * «всё прочитано»; in-progress manga covers a chapter progress bar.
  */
 @Composable
@@ -123,9 +128,9 @@ fun Shelf(
         val bookH = min(MAX_BOOK, avail / rows - extras).coerceAtLeast(40.dp)
         val slotW = bookH / COVER_RATIO / COVER_SLOTS
         val innerW = maxWidth - ScreenPadding * 2 - SHELF_INSET * 2
-        val slots = (innerW / slotW).toInt().coerceAtLeast(COVER_SLOTS)
+        val units = (innerW / (slotW / UNITS_PER_SLOT)).toInt().coerceAtLeast(COVER_SLOTS * UNITS_PER_SLOT)
 
-        val pages = remember(items, slots, rows) { shelfPages(items, slots, rows) }
+        val pages = remember(items, units, rows) { shelfPages(items, units, rows, UNITS_PER_SLOT, GAP_UNITS) }
         SideEffect {
             nav.pageCount = pages.size.coerceAtLeast(1)
             if (nav.page >= nav.pageCount) nav.page = nav.pageCount - 1
@@ -162,11 +167,13 @@ private fun ShelfRow(
     onBook: (Book) -> Unit,
     onManga: (Manga) -> Unit,
 ) {
+    val gapW = slotW / UNITS_PER_SLOT * GAP_UNITS
     Column(Modifier.fillMaxWidth().padding(horizontal = ScreenPadding)) {
         Row(Modifier.padding(horizontal = SHELF_INSET).height(bookH), verticalAlignment = Alignment.Bottom) {
-            for (unit in row) {
+            row.forEachIndexed { i, unit ->
+                if (i > 0 && gapBetween(row[i - 1], unit)) Spacer(Modifier.width(gapW))
                 when (unit) {
-                    is BookItem -> BookOnShelf(unit, unit.book.title, slotW, bookH, bookCovers, onBook)
+                    is BookItem -> BookOnShelf(unit, unit.book.title, slotW, bookH, bookCovers, onBook, standalone = true)
                     is MangaItem -> MangaOnShelf(unit, slotW, bookH, mangaCovers, onManga)
                     is SeriesGroup -> unit.items.forEach {
                         val b = it.book
@@ -177,7 +184,8 @@ private fun ShelfRow(
         }
         Plank()
         Row(Modifier.padding(horizontal = SHELF_INSET).height(LABEL)) {
-            for (unit in row) {
+            row.forEachIndexed { i, unit ->
+                if (i > 0 && gapBetween(row[i - 1], unit)) Spacer(Modifier.width(gapW))
                 val w = slotW * slotWidth(unit)
                 Box(Modifier.width(w).fillMaxHeight().padding(top = 2.dp, end = 2.dp)) {
                     if (unit is SeriesGroup) SeriesLabel(unit.name)
@@ -208,7 +216,15 @@ private fun SeriesLabel(name: String) {
 }
 
 @Composable
-private fun BookOnShelf(item: BookItem, spineText: String, slotW: Dp, bookH: Dp, covers: Map<File, File>, onBook: (Book) -> Unit) {
+private fun BookOnShelf(
+    item: BookItem,
+    spineText: String,
+    slotW: Dp,
+    bookH: Dp,
+    covers: Map<File, File>,
+    onBook: (Book) -> Unit,
+    standalone: Boolean = false,
+) {
     val b = item.book
     if (item.asCover) {
         CoverOnShelf(slotW, bookH, onClick = { onBook(b) }) {
@@ -216,7 +232,7 @@ private fun BookOnShelf(item: BookItem, spineText: String, slotW: Dp, bookH: Dp,
             ProgressBar((b.percent ?: 0.0).toFloat(), Modifier.align(Alignment.BottomCenter).padding(4.dp), height = 5.dp)
         }
     } else {
-        Spine(spineText, slotW, bookH, onClick = { onBook(b) })
+        Spine(spineText, slotW, bookH, onClick = { onBook(b) }, light = standalone)
     }
 }
 
@@ -268,24 +284,29 @@ private fun CoverOnShelf(slotW: Dp, bookH: Dp, onClick: () -> Unit, content: @Co
 
 private val SPINE_SHADES = listOf(Color(0xFF2A2A2A), Color(0xFF474747), Color(0xFF1C1C1C), Color(0xFF3A3A3A))
 
-/** A spine: a dark band of slightly varying height with the title running top to bottom; [badge] is a «+N» strip at its foot. */
+/**
+ * A spine: a band of slightly varying height with the title running top to bottom; dark, or
+ * white with a black outline when [light]. [badge] is a «+N» strip at its foot.
+ */
 @Composable
-private fun Spine(title: String, slotW: Dp, bookH: Dp, onClick: () -> Unit, badge: String? = null) {
+private fun Spine(title: String, slotW: Dp, bookH: Dp, onClick: () -> Unit, badge: String? = null, light: Boolean = false) {
     val h = (title.hashCode() and 0x7fffffff)
     val height = bookH * (0.86f + (h % 15) / 100f)
     val shade = SPINE_SHADES[(h / 15) % SPINE_SHADES.size]
+    val shape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp)
     Box(
         Modifier.width(slotW).height(height).padding(end = 1.5.dp)
-            .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
-            .background(shade)
+            .clip(shape)
+            .background(if (light) Color.White else shade)
+            .then(if (light) Modifier.border(1.5.dp, Color.Black, shape) else Modifier)
             .noTapAfterSlop()
             .clickable(onClick = onClick),
     ) {
-        // A thin light band near the top, like the label strip on a real spine.
-        Box(Modifier.padding(top = 5.dp).fillMaxWidth().height(1.5.dp).background(Color(0xFFBBBBBB)))
+        // A thin band near the top, like the label strip on a real spine.
+        Box(Modifier.padding(top = 5.dp).fillMaxWidth().height(1.5.dp).background(if (light) Color.Black else Color(0xFFBBBBBB)))
         Text(
             title,
-            style = serif(10.5f, color = Color.White),
+            style = serif(10.5f, color = if (light) Color.Black else Color.White),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp, bottom = if (badge != null) 22.dp else 6.dp).verticalText(),
