@@ -5,6 +5,7 @@ import android.os.Environment
 import android.os.SystemClock
 import android.util.Log
 import app.nekoshelf.launcher.data.books.BookCovers
+import app.nekoshelf.launcher.data.books.BookMetas
 import app.nekoshelf.launcher.data.books.BookScanner
 import app.nekoshelf.launcher.data.koreader.History
 import app.nekoshelf.launcher.data.koreader.KoreaderPaths
@@ -94,6 +95,7 @@ class HomeLoader(
     private val cacheDir = appContext.cacheDir
     val bridge = MangaBridge(appContext)
     private val bookCovers = BookCovers(File(cacheDir, "covers"), COVER_PX)
+    private val bookMetas = BookMetas(File(cacheDir, "book_meta.json"))
     private val mangaCovers = MangaCovers(cacheDir) { bridge.cover(it) }
     /** Last KOReader stats read, keyed on the DB files' size + mtime (and the zone). Under [LOCK]. */
     private var statsMemo: Pair<List<Any>, List<DayStat>>? = null
@@ -158,9 +160,10 @@ class HomeLoader(
         val nowMs = System.currentTimeMillis()
         val homeDir = KoreaderPaths(koreaderRoot).homeDir()
         val opened = History.read(koreaderRoot).associate { it.file.absolutePath to it.time }
-        val books = BookScanner.scan(homeDir).map { bf ->
-            Book.from(bf, Sidecar.read(bf.file), opened[bf.file.absolutePath])
-        }
+        val found = BookScanner.scan(homeDir).map { it to Sidecar.read(it.file) }
+        // Until KOReader opens a book its sidecar has no title: read the one inside the file.
+        val metas = bookMetas.resolve(found.filter { (_, state) -> state?.title.isNullOrBlank() }.map { it.first.file })
+        val books = found.map { (bf, state) -> Book.from(bf, state, opened[bf.file.absolutePath], metas[bf.file]) }
         val bookDb = File(koreaderRoot, "settings/statistics.sqlite3")
         val bookDays = bookDays(bookDb, zone)
         val nowBook = ShelfBuilder.nowReadingBook(books)

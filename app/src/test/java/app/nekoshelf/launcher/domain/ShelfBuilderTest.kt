@@ -189,4 +189,16 @@ class ShelfBuilderTest {
         assertEquals("x", b3.title)
         assertNull(b3.series)
     }
+
+    @Test fun bookFromUsesTheTitleInsideTheFileUntilKoreaderHasOne() {
+        val bf = BookFile(File("/books/187310-troetsarstvie.epub"), null, 1L)
+        val meta = app.nekoshelf.launcher.data.books.BookMeta("Троецарствие", "Ло Гуаньчжун")
+        val b = Book.from(bf, null, null, meta)
+        assertEquals("Троецарствие", b.title)
+        assertEquals("Ло Гуаньчжун", b.authors)
+
+        val st = BookState(0.1, "reading", "Название из KOReader", "Автор из KOReader", null, null, "ru")
+        assertEquals("Название из KOReader", Book.from(bf, st, null, meta).title)
+        assertEquals("x", Book.from(BookFile(File("/books/x.epub"), null, 1L), null, null, app.nekoshelf.launcher.data.books.BookMeta(" ", null)).title)
+    }
 }
